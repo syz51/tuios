@@ -3265,6 +3265,19 @@ and 42,488,482, so it adds 856,064 and 760,448 bytes. No dependency was added.
 The binary stays under the 50 MB ceiling. The new budgets leave 4,198 bytes of
 room.
 
+The budgets went to 46,067,976 and 42,779,128 when sketch followed the layout
+of pele v1.8.0, with fewer edge crossings around subgraphs. The build before
+it measured 45,973,666 and 42,707,986 bytes (Go 1.26.10, as CI builds it). The
+change measured 46,063,778 and 42,774,930, so it adds 90,112 and 66,944 bytes.
+No dependency was added. The new budgets leave 4,198 bytes of room.
+
+The budgets went to 46,141,704 and 42,845,784 when sketch began to draw
+$$...$$ math labels through a host resolver, as pele v1.8.0 does. The build
+before it measured 46,063,778 and 42,774,930 bytes (Go 1.26.10, as CI builds
+it). The change measured 46,137,506 and 42,841,586, so it adds 73,728 and
+66,656 bytes. No dependency was added. The new budgets leave 4,198 bytes of
+room.
+
 To raise a budget, do it on purpose in its own commit: run
 `scripts/binary-size.sh` on the Go version in go.mod, set the new budget a
 little above the printed size in the `budget` function of that script, and say
@@ -3272,11 +3285,11 @@ in the commit message what grew and why it is worth the bytes. A Go version
 bump that grows the runtime is a reason; a dependency added for one helper
 function is usually not, and is better replaced.
 
-The linux/amd64 budget went to 45,990,152 for configurable popup dimming on
-#976's scrim. Go 1.26.10 release builds at 3fe004a5 measured 45,973,666 and
-42,707,986 bytes (linux/amd64 and darwin/arm64); the change measures
-45,985,954 and 42,708,178, adding 12,288 and 192 bytes. No dependency was
-added. Linux keeps 4,198 bytes of room; Darwin's budget stays at 42,728,920.
+The linux/amd64 budget went to 46,153,992 for configurable popup dimming on
+#976's scrim. Go 1.26.10 release builds measured 46,137,506 and 42,841,586
+bytes before it (linux/amd64 and darwin/arm64) and 46,149,794 and 42,841,778
+with it, adding 12,288 and 192 bytes. No dependency was added. Linux keeps
+4,198 bytes of room; Darwin's budget stays at 42,845,784.
 
 ## 2026-09 chrome colour depth and OKLab blending
 
