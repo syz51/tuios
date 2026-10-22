@@ -3272,6 +3272,12 @@ in the commit message what grew and why it is worth the bytes. A Go version
 bump that grows the runtime is a reason; a dependency added for one helper
 function is usually not, and is better replaced.
 
+The linux/amd64 budget went to 45,990,152 for configurable popup dimming on
+#976's scrim. Go 1.26.10 release builds at 3fe004a5 measured 45,973,666 and
+42,707,986 bytes (linux/amd64 and darwin/arm64); the change measures
+45,985,954 and 42,708,178, adding 12,288 and 192 bytes. No dependency was
+added. Linux keeps 4,198 bytes of room; Darwin's budget stays at 42,728,920.
+
 ## 2026-09 chrome colour depth and OKLab blending
 
 Measured on an Apple M3 Pro shared with other work, so every comparison is an
