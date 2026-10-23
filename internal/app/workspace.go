@@ -125,7 +125,7 @@ func (m *OS) openPaneOnEmptyWorkspace(from, workspace int, fromPane *terminal.Wi
 		// does not hold back this client's pushes the way addDaemonWindow's
 		// intent does: a push that leaves the pane out is reconciled by the
 		// daemon, and holding one back would lose the next switch.
-		if err := m.DaemonClient.SendNewWindowFrom(workspace, cwdFrom, sshFrom); err != nil {
+		if err := m.DaemonClient.SendNewWindowFrom(workspace, cwdFrom, sshFrom, m.newWindowSize()); err != nil {
 			m.LogError("Failed to ask the daemon for a pane on workspace %d: %v", workspace, err)
 			return
 		}

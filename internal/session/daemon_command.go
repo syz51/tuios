@@ -163,6 +163,7 @@ func (d *Daemon) handleExecuteCommand(cs *connState, msg *Message) error {
 				win, err = session.AddDaemonWindowWith(NewWindowOptions{
 					FocusIfShown: true, Cwd: payload.Cwd, Workspace: payload.Workspace,
 					Name: name, Command: command, Env: newWindowEnv,
+					InitialSize: payload.InitialSize,
 				}, onExit)
 			}
 			switch {
@@ -175,7 +176,7 @@ func (d *Daemon) handleExecuteCommand(cs *connState, msg *Message) error {
 				data = map[string]any{"window_id": win.ID, "name": win.Title}
 			}
 		} else {
-			data, err = d.executeDaemonCommandEnv(session, payload.CommandType, payload.Args, payload.Cwd, payload.Workspace, newWindowEnv, onExit)
+			data, err = d.executeDaemonCommandEnv(session, payload.CommandType, payload.Args, payload.Cwd, payload.Workspace, newWindowEnv, payload.InitialSize, onExit)
 		}
 		if err != nil {
 			return d.sendCommandResult(cs, payload.RequestID, false, err.Error())

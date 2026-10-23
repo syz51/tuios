@@ -1406,12 +1406,19 @@ func (c *TUIClient) SendIntentIn(cwd, commandType string, args ...string) error 
 // current one. An empty sshFrom follows none. See
 // ExecuteCommandPayload.SSHFrom.
 func (c *TUIClient) SendNewWindowIntent(cwd string, workspace int, sshFrom, commandType string, args ...string) error {
+	return c.SendSizedNewWindowIntent(cwd, workspace, sshFrom, nil, commandType, args...)
+}
+
+// SendSizedNewWindowIntent is SendNewWindowIntent with a predicted initial box.
+// The daemon treats the size as advisory and bounds it before spawning.
+func (c *TUIClient) SendSizedNewWindowIntent(cwd string, workspace int, sshFrom string, size *NewWindowSize, commandType string, args ...string) error {
 	return c.sendNewWindow(&ExecuteCommandPayload{
 		CommandType: commandType,
 		Args:        args,
 		Cwd:         cwd,
 		Workspace:   workspace,
 		SSHFrom:     sshFrom,
+		InitialSize: size,
 	})
 }
 
@@ -1423,13 +1430,18 @@ func (c *TUIClient) SendNewWindowIntent(cwd string, workspace int, sshFrom, comm
 //
 // sshFrom, when set, names the window whose ssh the new one follows, as
 // SendNewWindowIntent's does.
-func (c *TUIClient) SendNewWindowFrom(workspace int, cwdFrom, sshFrom string) error {
+func (c *TUIClient) SendNewWindowFrom(workspace int, cwdFrom, sshFrom string, size ...*NewWindowSize) error {
+	var initial *NewWindowSize
+	if len(size) > 0 {
+		initial = size[0]
+	}
 	return c.sendNewWindow(&ExecuteCommandPayload{
 		CommandType:  "NewWindow",
 		Workspace:    workspace,
 		CwdFrom:      cwdFrom,
 		SSHFrom:      sshFrom,
 		FocusIfShown: true,
+		InitialSize:  initial,
 	})
 }
 

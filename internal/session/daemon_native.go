@@ -42,7 +42,7 @@ func focusedWindowID(state *SessionState) (string, error) {
 // (for read verbs and NewWindow) or an error. Rendering-dependent verbs return
 // errNeedsClient.
 func (d *Daemon) executeDaemonCommand(sess *Session, commandType string, args []string, onExit func(ptyID string)) (map[string]any, error) {
-	return d.executeDaemonCommandEnv(sess, commandType, args, "", 0, nil, onExit)
+	return d.executeDaemonCommandEnv(sess, commandType, args, "", 0, nil, nil, onExit)
 }
 
 // executeDaemonCommandEnv is executeDaemonCommand with what a NewWindow takes
@@ -50,7 +50,7 @@ func (d *Daemon) executeDaemonCommand(sess *Session, commandType string, args []
 // session's current one), and environment entries its process gets on top of
 // an ordinary pane's. An ssh split uses env for the agent socket; see
 // SSHFollowArgv. Other commands ignore all three.
-func (d *Daemon) executeDaemonCommandEnv(sess *Session, commandType string, args []string, cwd string, workspace int, env []string, onExit func(ptyID string)) (map[string]any, error) {
+func (d *Daemon) executeDaemonCommandEnv(sess *Session, commandType string, args []string, cwd string, workspace int, env []string, size *NewWindowSize, onExit func(ptyID string)) (map[string]any, error) {
 	switch commandType {
 	case "NewWindow":
 		name := ""
@@ -66,7 +66,7 @@ func (d *Daemon) executeDaemonCommandEnv(sess *Session, commandType string, args
 			command = args[1:]
 		}
 		win, err := sess.AddDaemonWindowWith(
-			NewWindowOptions{Focus: true, Command: command, Name: name, Cwd: cwd, Workspace: workspace, Env: env}, onExit)
+			NewWindowOptions{Focus: true, Command: command, Name: name, Cwd: cwd, Workspace: workspace, Env: env, InitialSize: size}, onExit)
 		if err != nil {
 			return nil, err
 		}

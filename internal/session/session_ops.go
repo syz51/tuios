@@ -194,6 +194,10 @@ func (s *Session) AddDaemonWindow(title string, onExit func(ptyID string)) (Wind
 // starts in. The zero value is the historical behaviour of AddDaemonWindow
 // except for Focus, which every existing caller wants and passes explicitly.
 type NewWindowOptions struct {
+	// InitialSize is supplied by a client that knows the prospective layout.
+	// Nil keeps detached/older callers' full-session fallback. Popups use their
+	// own established sizing path instead.
+	InitialSize *NewWindowSize
 	// Title is the window's name. Empty takes the generated default.
 	Title string
 	// Cwd is the directory the shell starts in. Empty inherits the daemon's,
@@ -323,8 +327,10 @@ func (s *Session) AddDaemonWindowWith(opts NewWindowOptions, onExit func(ptyID s
 
 	// WindowState dimensions are the outer window box (including the border);
 	// the shell gets the inner content size, matching restoreSession.
-	ptyWidth := max(width-2, 1)
-	ptyHeight := max(height-2, 1)
+	ptyWidth, ptyHeight := max(width-2, 1), max(height-2, 1)
+	if !opts.Popup {
+		width, height, ptyWidth, ptyHeight = initialWindowSize(width, height, s.LayoutReserve(), opts.InitialSize)
+	}
 	// A popup starts at the box a client will give it, so its command reads
 	// its real size when it starts. A program that reads its size once and
 	// then acts on it (a nested tuios client, a pager) otherwise starts at

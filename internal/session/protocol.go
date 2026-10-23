@@ -819,6 +819,15 @@ type TerminalStatePayload struct {
 	State *TerminalState `json:"state"`
 }
 
+// NewWindowSize is a client's predicted outer box and drawable content size.
+// It is advisory: layout still places the window when its state arrives.
+type NewWindowSize struct {
+	Width  int `json:"width"`
+	Height int `json:"height"`
+	Cols   int `json:"cols"`
+	Rows   int `json:"rows"`
+}
+
 // ExecuteCommandPayload requests execution of a tape command.
 // The command is routed to the TUI client attached to the session.
 type ExecuteCommandPayload struct {
@@ -831,6 +840,10 @@ type ExecuteCommandPayload struct {
 	// default. An older daemon ignores it and the window starts where it
 	// would have before.
 	Cwd string `json:"cwd,omitempty"`
+	// InitialSize lets a layout-owning client start the shell at its intended
+	// content size, before any output or startup resize hold. Older peers
+	// omit/ignore it; the daemon bounds it against the current content region.
+	InitialSize *NewWindowSize `json:"initial_size,omitempty"`
 	// Workspace is the workspace a NewWindow goes on. Zero is the session's
 	// current one. A client in a scratch group sends the group's workspace,
 	// which is never the session's current one. An older daemon ignores it.

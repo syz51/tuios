@@ -674,7 +674,7 @@ func (m *OS) addDaemonWindow(dir, name, sshFrom string, command []string) *OS {
 		}
 		m.PreselectionDir = layout.PreselectionNone
 	}
-	if err := m.DaemonClient.SendNewWindowIntent(dir, ws, sshFrom, "NewWindow", args...); err != nil {
+	if err := m.DaemonClient.SendSizedNewWindowIntent(dir, ws, sshFrom, m.newWindowSize(), "NewWindow", args...); err != nil {
 		m.LogError("Failed to ask the daemon for a new window: %v", err)
 		m.windowIntentErr = err
 		m.CancelPendingSplit()
