@@ -8071,3 +8071,33 @@ All pass with the wiring restored.
 Repeat from `e2e/tui` with `TUIOS_E2E=1 TUIOS_E2E_BIN=/path/to/tuios go test
 -count=1 -run '^TestPopupDimsTheScreenBehind$' -v .`. `TUIOS_E2E_FRAMES` saves
 plain/styled text and PNGs for each option, override and focus step.
+
+## Divider inset
+
+Failure modes: a perimeter-only trim leaves horizontal branches attached to
+interior trunks; a missing divider can fake blank endpoints; corner markers
+or focus hooks can reconnect them; short strokes can disappear; partial zoom
+can trim offscreen endpoints; stale memoization can miss live changes.
+
+`TestDividerInset` reads both ends of a horizontal-only split, both horizontal
+branches beside an interior vertical trunk, outer vertical ends, and pane
+rectangles across live inset changes (0, 1, 8, 0). Inset 0 must restore tees and
+crosses; positive insets must leave a straight trunk, blank branch endpoint
+cells (including divider+1), and visible interior strokes. It also checks
+partial zoom. `TestDividerInsetShort` retains exactly one cell at inset 8.
+Both save plain/styled frames and PNGs through `TUIOS_E2E_FRAMES`.
+
+Run on 2026-10-23, macOS arm64. Before changing the renderer, the extended test
+failed at inset 1: `trunk = "├", want "│"`; horizontal-only and short-stroke
+checks passed. The corrected source passes both focused tests.
+
+A Go source overlay changes the real `buildSeparatorLayers` inset call site:
+vertical segments use the corrected trim, while horizontal segments use the
+previous perimeter-only helper and interior-junction-preserving scan. It keeps
+outer horizontal trimming intact. The horizontal-only subtest and inset-0 tee
+baseline pass, then inset 1 fails specifically at the newly detached inner end:
+`endpoint (51,14) = "─", want blank` (vertical divider x=50).
+The short vertical-stroke test also passes on this control.
+
+Repeat from `e2e/tui` with `TUIOS_E2E=1 TUIOS_E2E_BIN=/path/to/tuios go test
+-count=1 -run '^TestDividerInset(Short)?$' -v .`.

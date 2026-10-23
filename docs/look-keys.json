@@ -102,6 +102,13 @@
       "max": 90
     },
     {
+      "path": "appearance.divider_inset",
+      "type": "int",
+      "description": "Cells trimmed from both ends of each shared divider segment, without changing pane geometry",
+      "default": "0",
+      "max": 8
+    },
+    {
       "path": "appearance.dock_background",
       "type": "string",
       "description": "Background under the dock: off, theme, or a colour (#rrggbb, 0-255, a slot name or a role name); empty follows appearance.background",

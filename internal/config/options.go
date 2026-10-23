@@ -454,6 +454,11 @@ var optionSpecs = []Option{
 		Default:     "0", Min: 0, Max: PaneGapMax,
 	},
 	{
+		Path: "appearance.divider_inset", Type: OptionInt, Section: "appearance",
+		Description: "Cells trimmed from both ends of each shared divider segment, without changing pane geometry",
+		Default:     "0", Min: 0, Max: DividerInsetMax,
+	},
+	{
 		Path: "appearance.tiling_scheme", Type: OptionString, Section: "appearance",
 		Description: "BSP scheme a workspace inserts new windows with the first time it is tiled. A workspace already tiled keeps its own scheme.",
 		Accepted:    TilingSchemes, Default: TilingSchemeSpiral,

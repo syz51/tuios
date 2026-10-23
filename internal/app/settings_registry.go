@@ -70,6 +70,7 @@ var settingLabels = map[string]string{
 	"appearance.whichkey_position":        "Which-key position",
 	"appearance.wrap_lists":               "Wrap lists at the ends",
 	"appearance.gap":                      "Pane gap",
+	"appearance.divider_inset":            "Divider inset",
 	"appearance.drop_preview":             "Drop preview",
 	"appearance.drop_preview_delay":       "Drop preview delay",
 	"appearance.niri_reverse_scroll":      "Reverse scroll",

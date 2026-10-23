@@ -110,6 +110,7 @@ var lookKeys = []string{
 	"appearance.session_border",
 	"appearance.shared_borders",
 	"appearance.gap",
+	"appearance.divider_inset",
 	"appearance.panel_padding",
 	"appearance.zen_mode",
 	"appearance.hide_window_buttons",

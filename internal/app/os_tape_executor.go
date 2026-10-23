@@ -1006,10 +1006,9 @@ func (m *OS) setConfigFromRegistry(path, value string) error {
 	// Whether the rail is shown is the session's, and only its own option
 	// changes it. See keepSessionSidebar.
 	m.keepSessionSidebar(path == "appearance.sidebar.enabled" || path == "appearance.sidebar_enabled")
-	// Retile unconditionally: most of what is reachable here changes how much
-	// room the panes have (the sidebar's width and side, the dock's position),
-	// and a retile on a change that did not need one costs a frame.
-	m.applyAppearanceLive(true)
+	// Most appearance options can change the room the panes have. Divider
+	// inset is strictly paint, so leave even in-flight geometry alone for it.
+	m.applyAppearanceLive(path != "appearance.divider_inset")
 	return nil
 }
 

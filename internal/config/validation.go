@@ -109,6 +109,12 @@ func ValidateConfig(cfg *UserConfig) *ValidationResult {
 
 	// Validate enum appearance options (warn on unknown values; they fall back to defaults)
 	validateAppearanceEnums(cfg, result)
+	if cfg.Appearance.DividerInset < 0 || cfg.Appearance.DividerInset > DividerInsetMax {
+		result.Warnings = append(result.Warnings, ValidationError{
+			Field: "appearance", Key: "divider_inset",
+			Message: fmt.Sprintf("outside 0..%d; clamped to that range", DividerInsetMax),
+		})
+	}
 
 	// Validate the tape section (warn on an unknown autorun mode)
 	validateTapeConfig(cfg, result)

@@ -414,6 +414,7 @@ func (m *OS) renderSeparatorOverlay() []*lipgloss.Layer {
 	// none of them, so a frame that matches the last one reuses its layers.
 	key := separatorKey{
 		bounds: bounds, viewW: viewW, viewH: viewH,
+		inset: m.Settings.DividerInset,
 		rules: rules, border: border, focus: focus,
 		unfocused: unfocusedStr, focused: focusedStr,
 	}
@@ -433,6 +434,7 @@ func (m *OS) renderSeparatorOverlay() []*lipgloss.Layer {
 type separatorKey struct {
 	bounds             layout.Rect
 	viewW, viewH       int
+	inset              int
 	rules              chromeRules
 	border             lipgloss.Border
 	focus              borderPerimeter
@@ -490,12 +492,17 @@ func (m *OS) buildSeparatorLayers(splits []dividerLine, stack []paneLayer, key s
 
 	for _, s := range splits {
 		if s.corner {
+			// Corner markers would reconnect trimmed branch endpoints.
+			if key.inset > 0 {
+				continue
+			}
 			if s.Pos >= 0 && s.Pos < viewW && s.From >= 0 && s.From < viewH &&
 				!occluded(s.Pos, s.From, s.depth) {
 				get(s.Pos, s.From).junction = true
 			}
 			continue
 		}
+		s = insetDivider(s, bounds, key.inset)
 		if s.Vertical {
 			if s.Pos < 0 || s.Pos >= viewW {
 				continue
@@ -506,10 +513,10 @@ func (m *OS) buildSeparatorLayers(splits []dividerLine, stack []paneLayer, key s
 				}
 				get(s.Pos, y).vert = true
 			}
-			if s.From <= bounds.Y && rules.top >= 0 {
+			if key.inset == 0 && s.From <= bounds.Y && rules.top >= 0 {
 				get(s.Pos, rules.top).join = joinTop
 			}
-			if s.To >= bounds.Y+bounds.H-1 && rules.bottom >= 0 {
+			if key.inset == 0 && s.To >= bounds.Y+bounds.H-1 && rules.bottom >= 0 {
 				get(s.Pos, rules.bottom).join = joinBottom
 			}
 		} else {
@@ -522,10 +529,10 @@ func (m *OS) buildSeparatorLayers(splits []dividerLine, stack []paneLayer, key s
 				}
 				get(x, s.Pos).horiz = true
 			}
-			if s.From <= bounds.X && rules.left >= 0 {
+			if key.inset == 0 && s.From <= bounds.X && rules.left >= 0 {
 				get(rules.left, s.Pos).join = joinLeft
 			}
-			if s.To >= bounds.X+bounds.W-1 && rules.right >= 0 {
+			if key.inset == 0 && s.To >= bounds.X+bounds.W-1 && rules.right >= 0 {
 				get(rules.right, s.Pos).join = joinRight
 			}
 		}
@@ -612,7 +619,7 @@ func (m *OS) buildSeparatorLayers(splits []dividerLine, stack []paneLayer, key s
 		// hooks toward whichever side owns it. Plain segments and the meeting
 		// with a chrome rule are replaced, both being places the perimeter turns;
 		// a crossing between two dividers keeps the arms its neighbours need.
-		if onFocus && (ch == chVert || ch == chHoriz || c.join != joinNone) {
+		if onFocus && key.inset == 0 && (ch == chVert || ch == chHoriz || c.join != joinNone) {
 			if corner, ok := focus.corner(x, y, border); ok {
 				ch = corner
 			}
@@ -689,6 +696,32 @@ func (m *OS) buildSeparatorLayers(splits []dividerLine, stack []paneLayer, key s
 	}
 
 	return layers
+}
+
+// insetDivider clips to visible content and trims both segment ends, including
+// interior branch endpoints. It changes paint, never pane geometry.
+func insetDivider(s dividerLine, bounds layout.Rect, inset int) dividerLine {
+	if inset <= 0 {
+		return s
+	}
+	lo, hi := bounds.X, bounds.X+bounds.W-1
+	if s.Vertical {
+		lo, hi = bounds.Y, bounds.Y+bounds.H-1
+	}
+	// Partial zoom can put the original endpoints offscreen.
+	s.From, s.To = max(s.From, lo), min(s.To, hi)
+	if s.From > s.To {
+		return s
+	}
+	start, end := inset, inset
+	if start+end > s.To-s.From {
+		// Share the available trim between both ends, retaining one cell.
+		start = (s.To - s.From) / 2
+		end = s.To - s.From - start
+	}
+	s.From += start
+	s.To -= end
+	return s
 }
 
 // dividerGlyphSet is the glyph a divider cell is drawn with for each shape it

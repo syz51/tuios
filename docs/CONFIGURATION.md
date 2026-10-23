@@ -1,5 +1,24 @@
 # Configuration
 
+## Shared divider inset
+
+`appearance.divider_inset` (integer 0–8, default 0) shortens shared dividers
+at both ends of each horizontal or vertical segment by that many terminal cells. For example:
+
+```toml
+[appearance]
+shared_borders = true
+divider_inset = 1
+```
+
+Interior branches detach from perpendicular dividers; continuous trunks stay
+straight through crossings. Short strokes retain at least one cell, and 0
+restores connected junctions.
+Inset dividers do not join dock or rail rules. This is per-client painting:
+pane sizes, PTY sizes and divider mouse hit areas stay the same. Change it live
+with `tuios set-config appearance.divider_inset 1`. `appearance.gap` controls
+the space between panes separately.
+
 ## Sidebar file editor
 
 Settings, Sidebar, File editor sets `appearance.sidebar.editor`, the terminal

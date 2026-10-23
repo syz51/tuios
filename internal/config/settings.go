@@ -644,6 +644,10 @@ type Settings struct {
 	// would cost a move of the whole frame.
 	PaneGap int
 
+	// DividerInset trims both ends of each shared divider segment, in cells.
+	// It is client-local paint only; pane geometry and hit areas do not change.
+	DividerInset int
+
 	// MasterRatioPercent is how much of the screen the master pane takes in the
 	// master-stack layout, as a percent. It is the value a new session starts at;
 	// once a session is running the ratio is the session's, moved by the resize

@@ -417,6 +417,7 @@ type AppearanceConfig struct {
 	SidebarGitDirty        *bool    `toml:"git_dirty"`                 // Count changed and untracked paths in the rail's git section (default: true)
 	Glyphs                 string   `toml:"glyphs"`                    // Chrome glyph set: default, unicode, heavy, ascii, or one from ~/.config/tuios/glyphs
 	Gap                    int      `toml:"gap"`                       // Cells of empty space kept between neighbouring tiled panes (default: 0)
+	DividerInset           int      `toml:"divider_inset"`             // Shared divider endpoint trim in cells (default: 0)
 	DropPreview            string   `toml:"drop_preview"`              // What a BSP drag shows where the pane would land: fill, outline, off (default: fill)
 	DropPreviewDelay       string   `toml:"drop_preview_delay"`        // How long the pointer rests on a drop zone before it shows: a duration such as 120ms, or 0 (default: 120ms)
 	// TilingScheme is the BSP insertion scheme a workspace starts with the
@@ -2310,6 +2311,7 @@ func fillMissingAppearance(cfg, defaultCfg *UserConfig) {
 	} else if cfg.Appearance.Gap > PaneGapMax {
 		cfg.Appearance.Gap = PaneGapMax
 	}
+	cfg.Appearance.DividerInset = min(max(cfg.Appearance.DividerInset, 0), DividerInsetMax)
 	// Zero is "not written", which is the common case, so it falls back to the
 	// default rather than being clamped up to the floor: a config that never
 	// mentioned the master ratio must not read as one that asked for the
@@ -2726,6 +2728,7 @@ func ApplyAppearanceConfig(cfg *UserConfig, s *Settings) {
 	s.ShowClock = cfg.Appearance.ShowClock
 	s.ClockFormat = cfg.Appearance.ClockFormat
 	s.PaneGap = min(max(cfg.Appearance.Gap, 0), PaneGapMax)
+	s.DividerInset = min(max(cfg.Appearance.DividerInset, 0), DividerInsetMax)
 	s.MasterRatioPercent = clampPercent(cfg.Appearance.MasterRatio, MasterRatioMin, MasterRatioMax, MasterRatioDefault)
 	// A typo in the position falls back to left, and an unset count to one,
 	// which is the layout as it was before either existed.

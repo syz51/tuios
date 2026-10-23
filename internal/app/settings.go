@@ -417,6 +417,7 @@ func (m *OS) settingsCategories() []settingsCategory {
 			opt("appearance.border_focused_gradient"),
 			opt("appearance.border_gradient_angle"),
 			custom("appearance.gap", m.paneGapItem()),
+			opt("appearance.divider_inset"),
 			opt("appearance.tiling_scheme"),
 			opt("appearance.drop_preview"),
 			opt("appearance.drop_preview_delay"),

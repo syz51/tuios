@@ -654,6 +654,9 @@ func (s *Settings) FormatWorkspaceTab(name string, index int, icon, zoom string)
 // being spacing.
 const PaneGapMax = 8
 
+// DividerInsetMax bounds the number of cells trimmed from shared divider ends.
+const DividerInsetMax = 8
+
 // The tiling schemes, under the names they travel by: in [startup] layout, in
 // session state, and in the command palette. They live here rather than in the
 // package that implements them because the option registry has to publish the
