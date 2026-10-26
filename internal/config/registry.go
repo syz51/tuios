@@ -56,6 +56,8 @@ type sectionMaps struct {
 	terminalMode, global, script, sidebar, sidebarFiles   map[string]string
 	sidebarAgents, inbox, inboxPeek, mail, copyMode       map[string]string
 	transfers, lists                                      map[string]string
+	// menus holds each declared menu (see MenuConfig), by name.
+	menus map[string]map[string]string
 }
 
 // NewKeybindRegistry creates a new keybind registry from config
@@ -124,6 +126,10 @@ func (r *KeybindRegistry) buildMappings() {
 		mail:            r.sectionKeyMap(kb.Mail),
 		transfers:       r.sectionKeyMap(kb.Transfers),
 		copyMode:        r.sectionKeyMap(kb.CopyMode),
+		menus:           make(map[string]map[string]string, len(kb.Menus)),
+	}
+	for _, name := range kb.MenuNames() {
+		r.sections.menus[name] = r.sectionKeyMap(kb.Menus[name].Keys)
 	}
 }
 
@@ -289,6 +295,12 @@ func (r *KeybindRegistry) GetScriptAction(key string) string {
 // menu (the leader, then prefix_tuios's key).
 func (r *KeybindRegistry) GetTuiosPrefixAction(key string) string {
 	return r.lookupKey(key, r.sections.tuiosPrefix)
+}
+
+// GetMenuAction returns the action name for a given key in the declared menu
+// with the given name (see MenuConfig).
+func (r *KeybindRegistry) GetMenuAction(name, key string) string {
+	return r.lookupKey(key, r.sections.menus[name])
 }
 
 // GetLayoutPrefixAction returns the action name for a given key in layout prefix
@@ -645,6 +657,7 @@ var ActionDescriptions = map[string]string{
 	"inbox_tab_next":     "Agents view: the focus's tab to the right",
 	"inbox_expand":       "Agents view: show every line of every card in the thread, or fold them again",
 	"inbox_compare":      "Agents view: compare the attempts of the fan under the cursor, ask a judge, keep one",
+	"inbox_artifact":     "Agents view: open what the agent has shown, such as a TML form, and use it",
 
 	// The rail's agent rows. They act only while the cursor is on an agent
 	// row, and a key they share with a rail binding keeps its rail meaning on
@@ -841,6 +854,11 @@ var ActionDescriptions = map[string]string{
 	"toggle_scratch":  "Show or hide the scratch terminal",
 	"hints_all_panes": "Label the text on all panes to copy it",
 
+	// The scrollback in the editor (prefix E, ctrl+g in copy mode)
+	ActionEditScrollback: "Open the scrollback in the editor",
+	// No default key (cmd+k in other terminals)
+	ActionClearScrollback: "Clear the scrollback and the screen above the prompt",
+
 	// Copy mode search (no default keybinding)
 	ActionCopyModeSearchForward:  "Enter copy mode and search forward",
 	ActionCopyModeSearchBackward: "Enter copy mode and search backward",
@@ -950,6 +968,8 @@ var ActionDescriptions = map[string]string{
 	"prefix_session_switcher":   "Open the session switcher",
 	"prefix_workspace_switcher": "Open the workspace switcher",
 	"choose_tree":               "Find a pane in every session and go to it",
+	"goto_picker":               "Go to an agent, session, workspace or pane",
+	"new_worktree":              "Make a worktree session in the focused pane's repository",
 	"prefix_layout":             "Enter layout prefix",
 
 	// Tape Prefix
@@ -1002,6 +1022,7 @@ var ActionDescriptions = map[string]string{
 	"window_prefix_next":   "Focus the next window",
 	"window_prefix_prev":   "Focus the previous window",
 	"window_prefix_tiling": "Turn tiling on or off",
+	"window_prefix_float":  "Float the pane or tile it. A TML popup becomes a pane, and a TML pane a popup",
 	"prefix_tuios":         "Open the tuios menu: the tuios keys a preset moved",
 	"open_keybind_presets": "Choose the keys: tuios, tmux, screen or zellij",
 }

@@ -1,4 +1,4 @@
-// Ported from pele tests/render/math.test.ts at 8fad23bd51783e4df1204e177a7fb0d2a30dcd13.
+// Ported from pele tests/render/math.test.ts at 4eff76f98c73b6817800a05773517f35832e4e92.
 //
 // pele's resolver returns null or a malformed object for "nothing". A Go
 // resolver reports false, or gives a width or height that is not a positive

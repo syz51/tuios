@@ -5,6 +5,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"tuios.dev/plot"
 	"tuios.dev/tml"
@@ -117,8 +118,10 @@ func (s *Surface) buildLeaf(b *box, vars map[string]any) widget {
 			delta: s.str(n, "delta", vars), role: s.roleOr(n, vars, "fg"), press: s.actionsOf(n, "on-press")}
 	case "kv":
 		return s.buildKV(b, vars)
-	case "code", "markdown", "diff", "mermaid":
+	case "code", "markdown", "diff":
 		return s.buildCode(b, vars)
+	case "mermaid":
+		return s.buildMermaid(b, vars)
 	case "button":
 		kind := n.AttrString("kind")
 		return &buttonWidget{label: s.plainText(n, vars), key: n.AttrString("key"), primary: kind == "primary",
@@ -321,10 +324,14 @@ func tileBar(s *Surface) string {
 	return "▎"
 }
 
-// kvWidget is key and value pairs in two aligned columns.
+// kvWidget is key and value pairs in two aligned columns. A long value
+// wraps onto more rows under its value column.
 type kvWidget struct {
 	keys, vals []string
 	roles      []string
+
+	cacheW int
+	lines  [][]line // each value wrapped at the value column of cacheW
 }
 
 func (s *Surface) buildKV(b *box, vars map[string]any) widget {
@@ -352,28 +359,51 @@ func (w *kvWidget) keyW() int {
 	return n + 2
 }
 
+// linesFor wraps each value in the value column of a widget w cells wide.
+func (w *kvWidget) linesFor(width int) (int, [][]line) {
+	kw := min(w.keyW(), width/2)
+	if w.lines == nil || w.cacheW != width {
+		w.lines = make([][]line, len(w.vals))
+		for i, v := range w.vals {
+			w.lines[i] = wrap([]span{{text: v, st: style{fg: w.roles[i]}}}, max(width-kw, 1), wrapWord)
+		}
+		w.cacheW = width
+	}
+	return kw, w.lines
+}
+
 func (w *kvWidget) measure(_ *Surface, _ *box, maxW int) (int, int) {
 	vw := 0
 	for _, v := range w.vals {
 		vw = max(vw, width(v))
 	}
-	return min(w.keyW()+vw, maxW), len(w.keys)
+	_, lines := w.linesFor(maxW)
+	h := 0
+	for _, l := range lines {
+		h += len(l)
+	}
+	return min(w.keyW()+vw, maxW), h
 }
 
 func (w *kvWidget) paint(_ *Surface, _ *box, c *canvas, r Rect) {
-	kw := min(w.keyW(), r.Dx()/2)
+	kw, lines := w.linesFor(r.Dx())
+	y := r.Min.Y
 	for i := range w.keys {
-		y := r.Min.Y + i
 		if y >= r.Max.Y {
 			return
 		}
 		c.drawLine(r.Min.X, y, kw-1, plainLine(w.keys[i], style{fg: "dim"}), alignLeft)
-		c.drawLine(r.Min.X+kw, y, r.Dx()-kw, plainLine(w.vals[i], style{fg: w.roles[i]}), alignLeft)
+		for _, l := range lines[i] {
+			if y >= r.Max.Y {
+				return
+			}
+			c.drawLine(r.Min.X+kw, y, r.Dx()-kw, l, alignLeft)
+			y++
+		}
 	}
 }
 
-// codeWidget is preformatted text: code, and for now markdown, diff and
-// mermaid source.
+// codeWidget is preformatted text: code, and for now markdown and diff.
 type codeWidget struct {
 	lines  []string
 	from   int
@@ -539,13 +569,17 @@ func (w *statusWidget) paint(s *Surface, _ *box, c *canvas, r Rect) {
 	c.drawLine(r.Min.X, r.Min.Y, r.Dx(), w.line(s), alignLeft)
 }
 
-// fieldWidget draws a form field as it stands. Editing comes with the
-// input wave; the field shows its label and value now.
+// fieldWidget draws a form field. An input or a textarea takes typed
+// text: see field_edit.go.
 type fieldWidget struct {
 	kind, label, value, placeholder string
 	on, disabled                    bool
 	num, lo, hi                     float64
 	rows                            int
+	// key names the field's view state, bind the state path it writes,
+	// and caret is where the next typed text goes, in runes.
+	key, bind string
+	caret     int
 }
 
 const fieldLabelW = 14
@@ -554,11 +588,14 @@ func (s *Surface) buildField(b *box, vars map[string]any) widget {
 	n := b.src
 	w := &fieldWidget{kind: n.Type, label: s.str(n, "label", vars), placeholder: s.str(n, "placeholder", vars),
 		disabled: s.flag(n, "disabled", vars, false), rows: s.count(n, "rows", vars, 3, 1, 100)}
+	w.key, w.bind = b.base, n.AttrString("bind")
 	var v any
-	if p := n.AttrString("bind"); p != "" {
+	if p := w.bind; p != "" {
 		if ptr, err := tml.PathPointer(p); err == nil {
 			v = s.store.Get(ptr)
 		}
+	} else if t, ok := s.view.Text[w.key]; ok {
+		v = t
 	}
 	if v == nil {
 		v, _ = s.value(n, "value", vars)
@@ -588,6 +625,10 @@ func (s *Surface) buildField(b *box, vars map[string]any) widget {
 		if v != nil {
 			w.value = tml.Stringify(v)
 		}
+		w.caret = utf8.RuneCountInString(w.value)
+		if c, ok := s.view.Caret[w.key]; ok {
+			w.caret = clampInt(c, 0, w.caret)
+		}
 	}
 	return w
 }
@@ -599,11 +640,29 @@ func (w *fieldWidget) measure(_ *Surface, _ *box, maxW int) (int, int) {
 	return maxW, 1
 }
 
-func (w *fieldWidget) paint(s *Surface, _ *box, c *canvas, r Rect) {
+func (w *fieldWidget) paint(s *Surface, b *box, c *canvas, r Rect) {
 	x := r.Min.X
+	focused := w.editable() && s.focused() == b
+	if w.kind == "checkbox" {
+		// The box goes before its label, next to it, as a checklist reads.
+		mark := "[ ]"
+		if w.on {
+			mark = "[x]"
+		}
+		l := line{{text: mark, st: style{fg: "accent-bright"}}}
+		if w.label != "" {
+			l = append(l, span{text: " " + w.label, st: style{fg: "fg"}})
+		}
+		c.drawLine(x, r.Min.Y, r.Dx(), l, alignLeft)
+		return
+	}
 	if w.label != "" {
 		lw := min(fieldLabelW, r.Dx()/2)
-		c.drawLine(x, r.Min.Y, lw-1, plainLine(w.label, style{fg: "dim"}), alignLeft)
+		label := style{fg: "dim"}
+		if focused {
+			label = style{fg: "accent", attrs: attrBold}
+		}
+		c.drawLine(x, r.Min.Y, lw-1, plainLine(w.label, label), alignLeft)
 		x += lw
 	}
 	right := r.Max.X
@@ -614,26 +673,7 @@ func (w *fieldWidget) paint(s *Surface, _ *box, c *canvas, r Rect) {
 	g := s.g
 	switch w.kind {
 	case "input", "textarea":
-		edge := style{fg: "edge"}
-		for row := 0; row < r.Dy(); row++ {
-			y := r.Min.Y + row
-			c.text(x, y, "▏", edge, 1)
-			if s.pal.Depth == ASCII {
-				c.text(x, y, "[", edge, 1)
-			}
-			if row == 0 {
-				if w.value != "" {
-					c.drawLine(x+1, y, right-x-3, plainLine(w.value, style{fg: ink}), alignLeft)
-				} else {
-					c.drawLine(x+1, y, right-x-3, plainLine(w.placeholder, style{fg: "mute"}), alignLeft)
-				}
-			}
-			end := "▕"
-			if s.pal.Depth == ASCII {
-				end = "]"
-			}
-			c.text(right-1, y, end, edge, 1)
-		}
+		w.paintText(s, c, x, right, r, focused, ink)
 	case "select":
 		c.drawLine(x, r.Min.Y, right-x, line{
 			{text: g.left + " ", st: style{fg: "mute"}}, {text: w.value, st: style{fg: ink}}, {text: " " + g.right, st: style{fg: "mute"}},
@@ -646,12 +686,6 @@ func (w *fieldWidget) paint(s *Surface, _ *box, c *canvas, r Rect) {
 			l = line{{text: g.hline + g.hline, st: style{fg: "mute"}}, {text: g.radioOff, st: style{fg: "mute"}}, {text: " off", st: style{fg: "mute"}}}
 		}
 		c.drawLine(x, r.Min.Y, right-x, l, alignLeft)
-	case "checkbox":
-		mark := "[ ]"
-		if w.on {
-			mark = "[x]"
-		}
-		c.drawLine(x, r.Min.Y, right-x, plainLine(mark, style{fg: "accent-bright"}), alignLeft)
 	case "slider":
 		if math.IsNaN(w.num) || math.IsInf(w.num, 0) {
 			w.num = w.lo
@@ -667,7 +701,7 @@ func (w *fieldWidget) paint(s *Surface, _ *box, c *canvas, r Rect) {
 			f = max(0, min(1, (w.num-w.lo)/(w.hi-w.lo)))
 		}
 		pos := int(f * float64(track-1))
-		for i := 0; i < track; i++ {
+		for i := range track {
 			glyph, st := g.heavy, style{fg: "track"}
 			if i < pos {
 				st.fg = "accent"
@@ -678,6 +712,62 @@ func (w *fieldWidget) paint(s *Surface, _ *box, c *canvas, r Rect) {
 			c.text(x+i, r.Min.Y, glyph, st, 1)
 		}
 		c.textRight(right, r.Min.Y, val, style{fg: ink})
+	}
+}
+
+// paintText draws an input or a textarea from column x to right: a field
+// of its own on each of its rows, so the person sees where to type on any
+// ground. With grounds the field is a box in the surface role with a rule
+// under its last row. At 16 colours and in ASCII, which have no grounds,
+// each row is ruled. The rule is mute, and accent on the focused field.
+func (w *fieldWidget) paintText(s *Surface, c *canvas, x, right int, r Rect, focused bool, ink string) {
+	grounded := s.pal.grounded()
+	rule := "mute"
+	if focused {
+		rule = "accent"
+	}
+	lines := strings.Split(w.value, "\n")
+	if w.kind == "input" {
+		lines = []string{strings.ReplaceAll(w.value, "\n", " ")}
+	}
+	text := []rune(w.value)
+	caretRow := strings.Count(string(text[:clampInt(w.caret, 0, len(text))]), "\n")
+	if w.kind == "input" {
+		caretRow = 0
+	}
+	first := 0
+	if focused {
+		first = max(caretRow-r.Dy()+1, 0)
+	}
+	inner := right - x - 2
+	for row := 0; row < r.Dy(); row++ {
+		y := r.Min.Y + row
+		var ul uint8
+		if !grounded || row == r.Dy()-1 {
+			ul = attrUnderline
+		}
+		if grounded {
+			c.fill(rect(x, y, right-x, 1), "surface")
+		}
+		c.hline(x, y, right-x, " ", style{fg: rule, attrs: ul})
+		if s.pal.Depth == ASCII {
+			c.text(x, y, "[", style{fg: rule}, 1)
+			c.text(right-1, y, "]", style{fg: rule}, 1)
+		}
+		i := first + row
+		st := style{fg: ink, attrs: ul}
+		switch {
+		case focused && i == caretRow:
+			ls, le := lineStart(text, w.caret), lineEnd(text, w.caret)
+			if w.kind == "input" {
+				ls, le = 0, len(text)
+			}
+			c.drawLine(x+1, y, inner, caretLine(text[ls:le], w.caret-ls, inner, st), alignLeft)
+		case w.value != "" && i < len(lines):
+			c.drawLine(x+1, y, inner, plainLine(lines[i], st), alignLeft)
+		case w.value == "" && row == 0 && !focused:
+			c.drawLine(x+1, y, inner, plainLine(w.placeholder, style{fg: "mute", attrs: ul}), alignLeft)
+		}
 	}
 }
 

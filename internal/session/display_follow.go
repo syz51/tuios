@@ -294,6 +294,13 @@ func (d *Daemon) sweepDisplayLinks() {
 // restored.
 func (d *Daemon) startDisplayFollow() {
 	d.sweepDisplayLinks()
+	d.initDisplayFollow()
+}
+
+// initDisplayFollow is startDisplayFollow without the sweep, for a daemon
+// image adopting its predecessor's panes, whose WAYLAND_DISPLAY names the
+// links.
+func (d *Daemon) initDisplayFollow() {
 	if !d.displayFollowing() {
 		return
 	}
@@ -504,7 +511,7 @@ func (m *Manager) displayEnv(sessionID string) []string {
 var displayVarNames = []string{"WAYLAND_DISPLAY", "DISPLAY", "XAUTHORITY"}
 
 // verbDisplayEnv reports the display a new pane of the session gets now.
-func (d *Daemon) verbDisplayEnv(_ *connState, params json.RawMessage) (any, *verbError) {
+func (d *Daemon) verbDisplayEnv(cs *connState, params json.RawMessage) (any, *verbError) {
 	var p struct {
 		Session string `json:"session"`
 	}
@@ -514,7 +521,7 @@ func (d *Daemon) verbDisplayEnv(_ *connState, params json.RawMessage) (any, *ver
 	if strings.TrimSpace(p.Session) == "" {
 		return nil, invalidParam("session", "session is the session whose display to print and cannot be empty")
 	}
-	sess, verr := d.resolveVerbSession(p.Session)
+	sess, verr := d.resolveVerbSession(cs, p.Session)
 	if verr != nil {
 		return nil, verr
 	}

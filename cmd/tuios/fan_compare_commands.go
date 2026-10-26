@@ -9,6 +9,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Gaurav-Gosain/tuios/internal/config"
+
 	"github.com/Gaurav-Gosain/tuios/internal/plural"
 	"github.com/Gaurav-Gosain/tuios/internal/session"
 	"github.com/Gaurav-Gosain/tuios/internal/worktree"
@@ -140,9 +142,11 @@ func renderFanCompare(res fanCompareResult, on string, now time.Time) string {
 				b.WriteString(cell)
 			case i == 3 || i == 4:
 				// Counts line up on the right.
-				b.WriteString(strings.Repeat(" ", widths[i]-len(cell)) + cell)
+				b.WriteString(strings.Repeat(" ", widths[i]-len(cell)))
+				b.WriteString(cell)
 			default:
-				b.WriteString(cell + strings.Repeat(" ", widths[i]-len(cell)))
+				b.WriteString(cell)
+				b.WriteString(strings.Repeat(" ", widths[i]-len(cell)))
 			}
 		}
 		b.WriteString("\n")
@@ -282,7 +286,11 @@ func runFanDiff(a, b string, stat bool) error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
-	diff, err := worktree.DiffWorking(ctx, ra.Path, rb.Path, stat)
+	cfg, err := config.LoadUserConfig()
+	if err != nil {
+		cfg = config.DefaultConfig()
+	}
+	diff, err := worktree.DiffWorking(ctx, ra.Path, rb.Path, stat, cfg.Agents.Checkpoints.MaxUntrackedBytes())
 	if err != nil {
 		return err
 	}

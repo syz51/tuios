@@ -24,6 +24,8 @@ import (
 //     Compare startup dimensions with the actual published content rectangle.
 //   - Removing the startup hold crashes/deadlocks macOS bash 3.2. Exercise its
 //     real prompt and subsequent input too; keep the existing winsize tests.
+//   - Empty-workspace creation has a separate wire request carrying the stable
+//     workspace tab key. Its startup size must survive alongside that key.
 //
 // Negative control: remove the sized send at addDaemonWindow's callsite.
 func TestStartupPaneSize(t *testing.T) {
@@ -123,9 +125,6 @@ func TestStartupPaneSize(t *testing.T) {
 			waitForAll(t, term, bootTimeout, "initial shell", prompt)
 			check := func(id, label string) {
 				t.Helper()
-				if err := term.WaitFor(func(s tuitest.Screen) bool { return strings.Count(s.Text(), prompt) > 0 }, uiTimeout); err != nil {
-					t.Fatal(err)
-				}
 				var result struct {
 					Windows []layoutRect `json:"windows"`
 				}
@@ -153,6 +152,7 @@ func TestStartupPaneSize(t *testing.T) {
 				initial, err := os.ReadFile(filepath.Join(base, id+".size"))
 				var initialRows, initialCols int
 				_, scanErr := fmt.Sscanf(string(initial), "%d %d", &initialRows, &initialCols)
+				waitForAll(t, term, uiTimeout, label+" rendered prompt", prompt)
 				saveArtifact(t, term, artifactDir(t), label)
 				savePNG(t, term.Screen(), hostPalette(t, ""), artifactDir(t), label)
 				_ = os.WriteFile(filepath.Join(artifactDir(t), label+"-guest.txt"), []byte(text), 0o600)
@@ -226,6 +226,32 @@ func TestStartupPaneSize(t *testing.T) {
 			waitForAll(t, term, shellTimeout, "shell accepts input after startup", "AFTER-preserved")
 			saveArtifact(t, term, artifactDir(t), "after-input")
 			savePNG(t, term.Screen(), hostPalette(t, ""), artifactDir(t), "after-input")
+			// Exercise SendNewWindowFrom as well as ordinary new-window/split
+			// intents: both the target tab and the initial box cross this path.
+			cli("set-config", "-s", "startup", "workspaces.new_window_when_empty", "true")
+			if err := term.SendKeys(tuitest.Alt('2')); err != nil {
+				t.Fatal(err)
+			}
+			deadline := time.Now().Add(uiTimeout)
+			var emptyWorkspacePane string
+			for time.Now().Before(deadline) {
+				if err := json.Unmarshal([]byte(cli("list-windows", "-s", "startup", "--json")), &result); err != nil {
+					t.Fatal(err)
+				}
+				for _, w := range result.Windows {
+					if w.Workspace == 2 {
+						emptyWorkspacePane = w.ID
+					}
+				}
+				if emptyWorkspacePane != "" {
+					break
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+			if emptyWorkspacePane == "" {
+				t.Fatal("switching to the empty workspace made no pane on workspace 2")
+			}
+			check(emptyWorkspacePane, "empty-workspace")
 		})
 	}
 }

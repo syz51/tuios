@@ -2,6 +2,8 @@ package tuie2e
 
 import (
 	"bytes"
+	"encoding/base64"
+	"fmt"
 	"image"
 	"image/png"
 	"os"
@@ -230,7 +232,10 @@ func fleetRowWith(s tuitest.Screen, want string) int {
 
 // saveCockpitFrames saves the screen as text and as a PNG drawn by
 // tuios.dev/shot, in the font named by TUIOS_E2E_FONT_DIR when it is set.
-func saveCockpitFrames(t *testing.T, term *tuitest.Terminal, name string) {
+//
+// pics are the kitty pictures the host shows (hostPictures), drawn over the
+// cells as the host draws them.
+func saveCockpitFrames(t *testing.T, term *tuitest.Terminal, name string, pics ...shot.Image) {
 	t.Helper()
 	dir := artifactDir(t)
 	saveArtifact(t, term, dir, name)
@@ -238,6 +243,7 @@ func saveCockpitFrames(t *testing.T, term *tuitest.Terminal, name string) {
 	p := shot.XTermPalette()
 	cols, rows := s.Size()
 	g := shot.NewGrid(cols, rows, p.FG, p.BG)
+	g.Images = pics
 	for y := range rows {
 		for x := range cols {
 			c := s.Cell(x, y)
@@ -599,6 +605,414 @@ func TestCockpitReplyAreaAndImageView(t *testing.T) {
 	mouseClick(t, term, col, row, tuitest.MouseLeft, 0)
 	waitText(t, term, "the closed area after Send", "Write a reply.")
 	alive(t, term, "after the reply area and the image view")
+}
+
+// TestCockpitReplyClipboardImageFirstPaste pastes a clipboard image into the
+// reply with ctrl+v, on a host with kitty graphics, and opens it. The
+// thumbnail and the image view each show their picture on the first try,
+// with no other key or click to bring it out.
+//
+// The picture is prepared off the update loop, and it lands in a frame whose
+// cells equal the last one: the box was drawn blank a frame earlier. The
+// renderer writes nothing for such a frame, and the picture was queued
+// behind it, so it waited for the next key or click. The screen is let go
+// quiet before the paste, so no other frame can carry the picture out.
+//
+// Negative control, recorded in NEGATIVE_CONTROLS.md: with FlushIfDrawn
+// returning at once, no thumbnail is placed after the paste.
+func TestCockpitReplyClipboardImageFirstPaste(t *testing.T) {
+	base := t.TempDir()
+	killDaemon(t, base)
+	useShippedLooks(base)
+	for _, s := range []string{"home", "docs"} {
+		if out, err := tuiosCLI(t, base, "new", s, "--detach"); err != nil {
+			t.Fatalf("create session %s: %v\n%s", s, err, out)
+		}
+	}
+	for _, args := range [][]string{
+		{"set-window", "-s", "docs", "-w", "0", "--name", "docs-cli"},
+		{"set-agent-state", "idle", "-s", "docs", "-w", "docs-cli", "--harness", "claude-code"},
+	} {
+		if out, err := tuiosCLI(t, base, args...); err != nil {
+			t.Fatalf("%v: %v\n%s", args, err, out)
+		}
+	}
+	// A wl-paste that offers one PNG and no text stands in for the
+	// clipboard, so the person's own clipboard is never read.
+	bin := t.TempDir()
+	clip := filepath.Join(bin, "clip.png")
+	if err := os.WriteFile(clip, gradientPNG(t, 640, 360), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	script := "#!/bin/sh\ncase \"$*\" in\n*--list-types*) echo image/png ;;\n*) cat '" + clip + "' ;;\nesac\n"
+	if err := os.WriteFile(filepath.Join(bin, "wl-paste"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	host := &lockedBuffer{}
+	term := startIn(t, base, startOpts{args: []string{"attach", "home"}, cols: 200, rows: 55, shippedLooks: true, out: host,
+		env: []string{"TERM=xterm-256color", "COLORTERM=truecolor", "PATH=" + bin + ":" + os.Getenv("PATH"), "WAYLAND_DISPLAY=wayland-e2e"}})
+	if err := term.WaitFor(func(s tuitest.Screen) bool { return countWindows(s) == 1 }, bootTimeout); err != nil {
+		t.Fatalf("client never attached: %v\n%s", err, term.Snapshot())
+	}
+	windowManagementMode(t, term)
+	if err := term.SendKeys(tuitest.Ctrl('b'), "i"); err != nil {
+		t.Fatal(err)
+	}
+	row, col := findText(t, term, "Write a reply.")
+	mouseClick(t, term, col, row, tuitest.MouseLeft, 0)
+	waitText(t, term, "the open reply editor", "Type your reply.")
+	waitBufferQuiet(t, host, 1500*time.Millisecond)
+
+	mark := len(host.String())
+	if err := term.SendKeys(tuitest.Ctrl('v')); err != nil {
+		t.Fatal(err)
+	}
+	waitText(t, term, "the image chip", "Image 1.png  640×360", "click to view", "[Image #1 · 640×360 png]")
+	// The thumbnail is placed on the box above its #1 label, with no other
+	// input.
+	var label struct{ row, col int }
+	if err := term.WaitFor(func(s tuitest.Screen) bool {
+		label.row = -1
+		for i, line := range strings.Split(s.Text(), "\n") {
+			if before, _, ok := strings.Cut(line, "#1"); ok && !strings.Contains(line, "[Image") {
+				label.row, label.col = i, len([]rune(before))
+			}
+		}
+		want := fmt.Sprintf("\x1b[%d;%dH\x1b_Ga=p,i=", label.row-draftThumbRows+1, label.col+1)
+		return label.row >= 0 && strings.Contains(host.String()[mark:], want)
+	}, 5*time.Second); err != nil {
+		saveCockpitFrames(t, term, "clipboard-thumb-missing", hostPictures(t, []byte(host.String()))...)
+		t.Fatalf("ASSERTION: the first paste placed no thumbnail (label at %+v): %v\n%s", label, err, term.Snapshot())
+	}
+	saveCockpitFrames(t, term, "clipboard-thumb-200x55", hostPictures(t, []byte(host.String()))...)
+
+	// The chip opens the image view, and its picture is placed with no
+	// other input.
+	row, col = findText(t, term, "Image 1.png  640×360")
+	mark = len(host.String())
+	mouseClick(t, term, col+2, row, tuitest.MouseLeft, 0)
+	waitText(t, term, "the image view", "pasted by you for docs-cli", "Click outside the picture to close it.")
+	if err := term.WaitFor(func(tuitest.Screen) bool {
+		for _, pic := range hostPictures(t, []byte(host.String())) {
+			if pic.Cols > 40 && pic.Rows > draftThumbRows {
+				return strings.Contains(host.String()[mark:], "a=p,")
+			}
+		}
+		return false
+	}, 5*time.Second); err != nil {
+		saveCockpitFrames(t, term, "clipboard-view-missing", hostPictures(t, []byte(host.String()))...)
+		t.Fatalf("ASSERTION: the image view placed no picture: %v\n%s", err, term.Snapshot())
+	}
+	saveCockpitFrames(t, term, "clipboard-view-200x55", hostPictures(t, []byte(host.String()))...)
+	alive(t, term, "after the clipboard image")
+}
+
+// waitBufferQuiet waits until the client has written nothing to the host for
+// quiet: a notification's countdown, say, has run out. waitHostQuiet is the
+// same for a sixelHost.
+func waitBufferQuiet(t *testing.T, host *lockedBuffer, quiet time.Duration) {
+	t.Helper()
+	last, since := -1, time.Now()
+	for deadline := time.Now().Add(30 * time.Second); time.Now().Before(deadline); time.Sleep(50 * time.Millisecond) {
+		if n := len(host.String()); n != last {
+			last, since = n, time.Now()
+		} else if time.Since(since) >= quiet {
+			return
+		}
+	}
+	t.Fatalf("the client never stopped writing to the host")
+}
+
+// placedAPC is one kitty graphics command, with the cursor move just before
+// it, which is where a placement goes.
+var placedAPC = regexp.MustCompile(`(?:\x1b\[(\d+);(\d+)H)?\x1b_G([^;\x1b]*)(?:;([^\x1b]*))?\x1b\\`)
+
+// hostPictures replays the kitty graphics in stream as the host does and
+// returns the pictures placed at the end, for a frame.
+func hostPictures(t *testing.T, stream []byte) []shot.Image {
+	t.Helper()
+	type placed struct {
+		row, col, cols, rows int
+	}
+	data := map[uint32][]byte{}
+	decoded := map[uint32]image.Image{}
+	live := map[gfxKey]placed{}
+	var sending uint32
+	for _, m := range placedAPC.FindAllSubmatch(stream, -1) {
+		p := kittyParams(string(m[3]))
+		id := atoiU32(p["i"])
+		switch p["a"] {
+		case "t", "T":
+			sending = id
+			data[id] = append([]byte(nil), m[4]...)
+		case "":
+			// A chunk after the first names no image: it is the one being
+			// sent.
+			data[sending] = append(data[sending], m[4]...)
+		case "p":
+			r, _ := strconv.Atoi(string(m[1]))
+			c, _ := strconv.Atoi(string(m[2]))
+			cols, _ := strconv.Atoi(p["c"])
+			rows, _ := strconv.Atoi(p["r"])
+			live[gfxKey{id, atoiU32(p["p"])}] = placed{row: r - 1, col: c - 1, cols: cols, rows: rows}
+		case "d":
+			keep := map[gfxKey]bool{}
+			for k := range live {
+				keep[k] = true
+			}
+			del(keep, p, id)
+			for k := range live {
+				if !keep[k] {
+					delete(live, k)
+				}
+			}
+		}
+	}
+	var out []shot.Image
+	for k, pl := range live {
+		img, ok := decoded[k.img]
+		if !ok {
+			raw, err := base64.StdEncoding.DecodeString(string(data[k.img]))
+			if err == nil {
+				img, err = png.Decode(bytes.NewReader(raw))
+			}
+			if err != nil {
+				t.Errorf("ASSERTION: image %d is placed but its picture does not decode: %v", k.img, err)
+				continue
+			}
+			decoded[k.img] = img
+		}
+		out = append(out, shot.Image{Pixels: img, Col: pl.col, Row: pl.row, Cols: pl.cols, Rows: pl.rows})
+	}
+	return out
+}
+
+// TestCockpitReplyMentions works the reply editor's @ list as a person does.
+// The selected entry carries a marker and the lit ground, and the draft line
+// gives up its own ground while the list is open. The arrows move the
+// selection, typing filters, enter puts the entry in and sends nothing, esc
+// closes the list and keeps the text, deleting the @ closes it, and a click
+// on an entry puts it in. The list leaves out the agent the reply is for,
+// and a pane name with a space goes in quoted as a shell word that -w takes.
+// Around the list: ? opens the help and esc on it comes back to the agents
+// view, the footer leaves the keys the reply area shows to the reply area,
+// enter on an empty draft says why nothing was sent, and a draft kept by
+// esc shows in the closed reply area. At 16 colours the marker alone shows
+// the selection.
+//
+// Negative controls, recorded in NEGATIVE_CONTROLS.md.
+func TestCockpitReplyMentions(t *testing.T) {
+	for _, depth := range []struct {
+		name string
+		env  []string
+	}{
+		{"truecolor", []string{"TERM=xterm-256color", "COLORTERM=truecolor"}},
+		{"16", []string{"TERM=xterm", "COLORTERM="}},
+	} {
+		t.Run(depth.name, func(t *testing.T) { replyMentions(t, depth.name == "16", depth.env) })
+	}
+}
+
+// replyMentions is TestCockpitReplyMentions at one colour depth. At 16
+// colours it stops after the selection checks.
+func replyMentions(t *testing.T, plain bool, env []string) {
+	base := t.TempDir()
+	killDaemon(t, base)
+	useShippedLooks(base)
+	for _, s := range []string{"home", "docs", "api", "web"} {
+		if out, err := tuiosCLI(t, base, "new", s, "--detach"); err != nil {
+			t.Fatalf("create session %s: %v\n%s", s, err, out)
+		}
+	}
+	// docs-cli is ready for review, so its group comes first and the reply
+	// is for it.
+	for _, args := range [][]string{
+		{"set-window", "-s", "docs", "-w", "0", "--name", "docs-cli"},
+		{"set-agent-state", "done", "-s", "docs", "-w", "docs-cli", "--harness", "claude-code"},
+		{"set-window", "-s", "api", "-w", "0", "--name", "api-auth"},
+		{"set-agent-state", "idle", "-s", "api", "-w", "api-auth", "--harness", "codex"},
+		{"set-window", "-s", "web", "-w", "0", "--name", "web-ui"},
+		{"set-agent-state", "idle", "-s", "web", "-w", "web-ui", "--harness", "codex"},
+	} {
+		if out, err := tuiosCLI(t, base, args...); err != nil {
+			t.Fatalf("%v: %v\n%s", args, err, out)
+		}
+	}
+	term := startIn(t, base, startOpts{args: []string{"attach", "home"}, cols: 160, rows: 45, shippedLooks: true, env: env})
+	if err := term.WaitFor(func(s tuitest.Screen) bool { return countWindows(s) == 1 }, bootTimeout); err != nil {
+		t.Fatalf("client never attached: %v\n%s", err, term.Snapshot())
+	}
+	windowManagementMode(t, term)
+	send := func(keys ...any) {
+		t.Helper()
+		if err := term.SendKeys(keys...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	frame := func(name string) {
+		t.Helper()
+		_ = term.WaitStable(uiTimeout)
+		saveCockpitFrames(t, term, name)
+	}
+	send(tuitest.Ctrl('b'), "i")
+	waitText(t, term, "the closed reply area", "Reply to docs-cli", "Write a reply.")
+
+	if !plain {
+		// ? opens the help, and closing it comes back to the agents view.
+		send("?")
+		waitText(t, term, "the help", "Keybindings")
+		send(tuitest.Esc)
+		waitText(t, term, "the agents view after the help", "Reply to docs-cli", "Write a reply.")
+		frame("help-closed")
+	}
+
+	send("r")
+	waitText(t, term, "the open reply editor", "Type your reply.")
+	if !plain {
+		// The footer leaves send, new line and image to the reply area's
+		// own line.
+		_, rows := term.Screen().Size()
+		foot := term.Screen().Line(rows - 1)
+		if !strings.Contains(foot, "undo") || strings.Contains(foot, "paste image") || strings.Contains(foot, "new line") {
+			t.Fatalf("ASSERTION: the footer repeats the reply area's keys: %q\n%s", foot, term.Snapshot())
+		}
+		// enter on an empty draft says why nothing was sent.
+		send(tuitest.Enter)
+		waitText(t, term, "the empty-reply notice", "The reply is empty. Type a message to send it.")
+		frame("reply-empty-enter")
+	}
+
+	// entries are the list's rows, top down: the line and whether it
+	// carries the selection marker in front of its badge.
+	type entry struct {
+		row      int
+		label    string
+		selected bool
+		bg       tuitest.Color
+	}
+	entries := func(s tuitest.Screen) []entry {
+		var out []entry
+		_, rows := s.Size()
+		for r := range rows {
+			line := s.Line(r)
+			for _, badge := range []string{"agent ", "pane  "} {
+				before, after, ok := strings.Cut(line, badge)
+				// The fleet column, when the view has one, ends at a rule.
+				lead := before
+				if i := strings.LastIndex(lead, "│"); i >= 0 {
+					lead = lead[i+len("│"):]
+				}
+				if !ok || strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(lead), "›")) != "" {
+					continue
+				}
+				label, _, _ := strings.Cut(strings.TrimSpace(after), "  ")
+				col := len([]rune(before)) + len(badge)
+				out = append(out, entry{row: r, label: label, selected: strings.Contains(lead, "›"), bg: s.Cell(col, r).Bg})
+			}
+		}
+		return out
+	}
+	selectedIs := func(want int) func(tuitest.Screen) bool {
+		return func(s tuitest.Screen) bool {
+			es := entries(s)
+			if len(es) < 3 {
+				return false
+			}
+			for i, e := range es {
+				if e.selected != (i == want) {
+					return false
+				}
+			}
+			return true
+		}
+	}
+	send("Ask ", "@")
+	waitText(t, term, "the @ list", "agent api/api-auth", "agent web/web-ui", "pane  home/Terminal", "tab insert")
+	frame("mention-open")
+	if strings.Contains(term.Screen().Text(), "docs/docs-cli") {
+		t.Fatalf("ASSERTION: the list offers the agent the reply is for\n%s", term.Snapshot())
+	}
+	if err := term.WaitFor(selectedIs(0), uiTimeout); err != nil {
+		t.Fatalf("ASSERTION: the first entry does not carry the marker alone: %v\n%s", err, term.Snapshot())
+	}
+	es := entries(term.Screen())
+	first, second := es[0], es[1]
+	if !plain {
+		if first.bg == second.bg {
+			t.Fatalf("ASSERTION: the selected entry's ground is the ground of the others\n%s", term.Snapshot())
+		}
+		row, col := findText(t, term, "Ask @")
+		if term.Screen().Cell(col, row).Bg != second.bg {
+			t.Fatalf("ASSERTION: the draft line keeps a lit ground while the list is open\n%s", term.Snapshot())
+		}
+	}
+	send(tuitest.Down)
+	if err := term.WaitFor(selectedIs(1), uiTimeout); err != nil {
+		t.Fatalf("ASSERTION: down did not move the marker to the second entry: %v\n%s", err, term.Snapshot())
+	}
+	if !plain && entries(term.Screen())[1].bg != first.bg {
+		t.Fatalf("ASSERTION: down did not move the lit ground to the second entry\n%s", term.Snapshot())
+	}
+	frame("mention-down")
+	if plain {
+		return
+	}
+	send(tuitest.Ctrl('p'))
+	if err := term.WaitFor(selectedIs(0), uiTimeout); err != nil {
+		t.Fatalf("ASSERTION: ctrl+p did not move the marker back up: %v\n%s", err, term.Snapshot())
+	}
+
+	// Typing filters, and enter puts the entry in without sending.
+	send("api")
+	waitGone(t, term, "the filtered-out entry", "agent web/web-ui")
+	send(tuitest.Enter)
+	waitText(t, term, "the inserted mention", "Ask api/api-auth")
+	waitGone(t, term, "the closed list", "tab insert")
+	if strings.Contains(term.Screen().Text(), "Write a reply.") {
+		t.Fatalf("ASSERTION: enter on the @ list sent the reply\n%s", term.Snapshot())
+	}
+	frame("mention-inserted")
+
+	// esc closes the list and keeps the text and the editor.
+	send("and @we")
+	waitText(t, term, "the list again", "agent web/web-ui")
+	send(tuitest.Esc)
+	waitGone(t, term, "the list after esc", "agent web/web-ui")
+	waitText(t, term, "the text after esc", "Ask api/api-auth and @we")
+	// Deleting the @ closes a list opened again.
+	send(tuitest.Backspace, tuitest.Backspace, tuitest.Backspace, "@")
+	waitText(t, term, "the list on a new @", "agent web/web-ui")
+	send(tuitest.Backspace)
+	waitGone(t, term, "the list after the @ is deleted", "agent web/web-ui")
+
+	// A click on an entry puts it in. The pane's name has a space, so it
+	// goes in quoted, and -w takes the name inside the quotes.
+	send("@")
+	row, col := findText(t, term, "pane  home/Terminal")
+	mouseClick(t, term, col+8, row, tuitest.MouseLeft, 0)
+	waitText(t, term, "the clicked mention", "Ask api/api-auth and home/'Terminal ")
+	waitGone(t, term, "the list after the click", "tab insert")
+	frame("mention-clicked")
+	_, after, _ := strings.Cut(term.Screen().Text(), "home/'Terminal ")
+	name, _, ok := strings.Cut(after, "'")
+	if !ok {
+		t.Fatalf("ASSERTION: the pane name is not closed by a quote\n%s", term.Snapshot())
+	}
+	if out, err := tuiosCLI(t, base, "capture-pane", "-s", "home", "-w", "Terminal "+name); err != nil {
+		t.Fatalf("ASSERTION: -w does not take the quoted name %q: %v\n%s", "Terminal "+name, err, out)
+	}
+
+	// esc keeps the draft, and the closed area shows it.
+	send(tuitest.Esc)
+	waitText(t, term, "the kept draft in the closed area", "Draft: Ask api/api-auth and home/'Terminal")
+	frame("reply-draft-kept")
+	send("r")
+	waitGone(t, term, "the closed area", "Draft: Ask")
+
+	// With the list closed, enter sends.
+	send(tuitest.Enter)
+	waitText(t, term, "the closed area after the send", "Write a reply.")
+	alive(t, term, "after the @ list")
 }
 
 // gradientPNG is a w by h PNG of soft colour bands, a picture that reads as

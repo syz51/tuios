@@ -1,7 +1,7 @@
 package sketch
 
 // Ported from pele tests/support/inert.ts, tests/support/xml.ts and the flowchart
-// part of tests/render/security.test.ts at 8fad23bd51783e4df1204e177a7fb0d2a30dcd13.
+// part of tests/render/security.test.ts, and the internal links of tests/util/url.test.ts, at 4eff76f98c73b6817800a05773517f35832e4e92.
 
 import (
 	"errors"
@@ -12,9 +12,11 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"tuios.dev/sketch/internal/js"
 	"tuios.dev/sketch/internal/types"
+	"tuios.dev/sketch/internal/util"
 )
 
 var (
@@ -39,6 +41,12 @@ func badAmp(s string) bool {
 
 // assertWellFormed checks that a string is well-formed XML: balanced tags, quoted attributes, escaped text.
 func assertWellFormed(xml string) error {
+	if i := strings.IndexFunc(xml, func(r rune) bool {
+		return r <= 0x08 || r == 0x0b || r == 0x0c || (r >= 0x0e && r <= 0x1f) || r == 0x7f || r == 0xfffe || r == 0xffff
+	}); i >= 0 {
+		r, _ := utf8.DecodeRuneInString(xml[i:])
+		return fmt.Errorf("character U+%04X near %q", r, xml[max(0, i-20):min(len(xml), i+20)])
+	}
 	var stack []string
 	i := 0
 	for i < len(xml) {
@@ -142,18 +150,30 @@ func setOf(list ...string) map[string]bool {
 // pele's output is inserted into pages as markup, so it must be inert whatever the diagram says:
 // only drawing elements, only presentation attributes, no script-capable URLs, no way to load a stylesheet.
 var (
-	inertElements = setOf("svg", "g", "rect", "circle", "ellipse", "polygon", "path", "text", "tspan", "a", "title", "desc", "image")
-	inertAttrs    = setOf("xmlns", "class", "viewBox", "width", "height", "style", "font-family", "font-size", "font-weight", "font-style",
+	inertElements = setOf("svg", "g", "rect", "circle", "ellipse", "polygon", "path", "text", "tspan", "a", "title", "desc", "image",
+		// The gradients of sankey links, with an idPrefix (pele 1.9.0).
+		"defs", "linearGradient", "stop")
+	inertAttrs = setOf("xmlns", "class", "viewBox", "width", "height", "style", "font-family", "font-size", "font-weight", "font-style",
 		"fill", "fill-opacity", "opacity", "stroke", "stroke-width", "stroke-dasharray", "stroke-linecap", "stroke-linejoin",
 		"role", "aria-roledescription", "aria-labelledby", "aria-describedby", "id", "data-id", "data-icon", "data-href",
 		"transform", "x", "y", "rx", "ry", "r", "cx", "cy", "d", "points", "text-anchor", "xml:space",
-		"href", "target", "rel", "preserveAspectRatio")
+		"href", "target", "rel", "preserveAspectRatio",
+		// <sub>, <sup>, <u> and <ins> in labels, and sankey gradients (pele 1.9.0).
+		"baseline-shift", "text-decoration", "gradientUnits", "x1", "x2", "offset", "stop-color")
 	styleProps = setOf("fill", "fill-opacity", "stroke", "stroke-width", "stroke-dasharray", "stroke-dashoffset", "stroke-linecap",
 		"stroke-linejoin", "stroke-opacity", "opacity", "rx", "ry", "font-size", "font-family", "font-weight", "font-style",
 		"text-decoration", "letter-spacing", "word-spacing", "max-width")
 	rootStyles   = setOf("height:auto", "color:var(--_fg)", "text-transform:none", "direction:ltr")
 	reRootFont   = regexp.MustCompile(`^font:\d+(?:\.\d+)?(?:e[-+]?\d+)?px sans-serif$`)
-	numericAttrs = setOf("x", "y", "width", "height", "r", "cx", "cy", "rx", "ry")
+	numericAttrs = setOf("x", "y", "width", "height", "r", "cx", "cy", "rx", "ry", "x1", "x2", "offset")
+	// The only values pele writes for the label attributes of pele 1.9.0.
+	fixedValues = map[string]map[string]bool{
+		"baseline-shift":  setOf("sub", "super"),
+		"text-decoration": setOf("underline"),
+		"gradientUnits":   setOf("userSpaceOnUse"),
+	}
+	// A sankey link points at its gradient with a fragment in this document, then a fallback colour.
+	reGradientFill = regexp.MustCompile(`^url\(#([\w-]+)\) `)
 
 	reNumber      = regexp.MustCompile(`^(?:-?\d+(?:\.\d+)?(?:e[-+]?\d+)?|100%)$`)
 	reScriptURL   = regexp.MustCompile(`(?i)^[` + js.S + `\x00-\x1f]*(?:javascript|vbscript|data)[` + js.S + `]*:`)
@@ -172,6 +192,8 @@ func inertProblem(svg string) string {
 	if err := assertWellFormed(svg); err != nil {
 		return err.Error()
 	}
+	// A gradient comes before the links that fill with it.
+	gradientIDs := map[string]bool{}
 	for _, el := range xmlElements(svg) {
 		if !inertElements[el.name] {
 			return "element <" + el.name + ">"
@@ -220,9 +242,27 @@ func inertProblem(svg string) string {
 						return "style property " + prop
 					}
 				}
-			case "fill", "stroke", "font-family", "rx":
+			case "fill":
+				if m := reGradientFill.FindStringSubmatch(value); m != nil {
+					if !gradientIDs[m[1]] {
+						return fmt.Sprintf("fill=%q points at no gradient of the diagram", value)
+					}
+					value = value[len(m[0]):]
+				}
 				if reUnsafePaint.MatchString(value) {
 					return fmt.Sprintf("%s=%q", name, value)
+				}
+			case "stroke", "font-family", "rx", "stop-color":
+				if reUnsafePaint.MatchString(value) {
+					return fmt.Sprintf("%s=%q", name, value)
+				}
+			case "baseline-shift", "text-decoration", "gradientUnits":
+				if !fixedValues[name][value] {
+					return fmt.Sprintf("%s=%q", name, value)
+				}
+			case "id":
+				if el.name == "linearGradient" {
+					gradientIDs[value] = true
 				}
 			}
 		}
@@ -262,6 +302,15 @@ var PAYLOADS = []string{
 	"]]><script>alert(1)</script>",
 	"--><script>alert(1)</script>",
 	"\u0000\u0001\u0008\u000b\u001f",
+	// pele writes lone surrogates here. Go strings hold UTF-8, so the port takes the bytes
+	// of an encoded surrogate, which are not valid UTF-8 and become U+FFFD on the way in.
+	"a\ufffeb\uffffc\xed\xa0\x80d\xed\xb0\x80e#65534;f",
+	"u\u0001rl(//evil.example/x)",
+	"u\ufffeRL(//evil.example/x)",
+	"u\xed\xa0\x80rl(//evil.example/x)",
+	"java\ufffescript:alert(1)",
+	"java\xed\xb0\x80script:alert(1)",
+	"file\uffff:///etc/passwd",
 	"__proto__",
 	"constructor",
 	"toString",
@@ -272,6 +321,8 @@ var PAYLOADS = []string{
 	"file:///etc/passwd",
 	"//evil.example/share",
 	`\\evil.example\share`,
+	"#92;#92;nevil.example/share",
+	"\t/#92;nevil.example/share",
 	"smb://evil.example/share",
 	"obsidian://open?vault=x",
 	`\"><script>`,
@@ -362,6 +413,109 @@ func TestFlowchartOutputIsInert(t *testing.T) {
 	}
 	for _, payload := range PAYLOADS {
 		checkInert(t, "flowchart TD\n  accTitle: t\n  A --> B", RenderOptions{IDPrefix: types.Ptr(payload), FontFamily: payload})
+	}
+}
+
+// labelTags are the inline tags a label styles since pele 1.9.0, with the two it had before.
+var labelTags = []string{"b", "i", "sub", "sup", "code", "kbd", "samp", "tt", "u", "ins", "var", "cite", "dfn"}
+
+// labelTagTemplates put a label with inline HTML in each kind of place that lays one out.
+var labelTagTemplates = []func(p string) string{
+	func(p string) string { return "flowchart TD\n  A[\"" + p + "\"] --> B" },
+	func(p string) string { return "flowchart TD\n  A[\"`" + p + "`\"] --> B" },
+	func(p string) string { return "flowchart TD\n  A -->|\"" + p + "\"| B" },
+	func(p string) string { return "sequenceDiagram\n  Alice->>Bob: " + p + "\n  Note over Alice: " + p },
+	func(p string) string { return "stateDiagram-v2\n  s1 : " + p + "\n  note right of s1 : " + p },
+	func(p string) string {
+		return "classDiagram\n  class A[\"" + p + "\"]\n  A : +" + p + "\n  A --> B : " + p
+	},
+	func(p string) string { return "kanban\n  todo[" + p + "]\n    t1[" + p + "]" },
+	func(p string) string { return "mindmap\n  root((" + p + "))\n    " + p },
+	func(p string) string { return "erDiagram\n  A ||--o{ B : \"" + p + "\"" },
+	func(p string) string { return "block\n  a[\"" + p + "\"]" },
+	func(p string) string {
+		return "requirementDiagram\n  requirement r {\n  id: 1\n  text: \"" + p + "\"\n  }"
+	},
+}
+
+// TestLabelTagsAreInert puts the inline tags of pele 1.9.0 around attack text, with
+// attributes, unclosed and nested, in every place that lays out a label. A tag a label
+// styles turns into an attribute pele chooses, a tag it drops leaves its text, and any
+// other text shaped like a tag stays text: none of it may reach the SVG as markup.
+func TestLabelTagsAreInert(t *testing.T) {
+	var labels []string
+	for _, tag := range labelTags {
+		for _, payload := range PAYLOADS {
+			labels = append(labels, "<"+tag+">"+payload+"</"+tag+">", "x<"+tag+">"+payload)
+		}
+		labels = append(labels,
+			"<"+tag+` onclick="alert(1)" style="background:url(javascript:alert(1))">x</`+tag+">",
+			"<"+tag+` href=javascript:alert(1)>x</`+tag+">",
+			"<"+tag+"><script>alert(1)</script></"+tag+">",
+			"<"+tag+"><svg onload=alert(1)>x</svg></"+tag+">",
+			"<"+tag+"><foo onload=alert(1)>x</foo></"+tag+">",
+			"<"+tag+">a<br/>b<"+tag+">c</"+tag+"></"+tag+">",
+			"</"+tag+">x<"+tag+"/>",
+			"<"+strings.ToUpper(tag)+">x</"+strings.ToUpper(tag)+">",
+			"<sup><"+tag+">a<sub>b<"+tag+">c</sup>d</"+tag+">",
+		)
+	}
+	for _, template := range labelTagTemplates {
+		for _, label := range labels {
+			checkInert(t, template(label), RenderOptions{})
+		}
+	}
+	// Text shaped like a tag that is not HTML is text: it comes out escaped.
+	for _, label := range []string{"<svg onload=alert(1)>", "<foo onload=alert(1)>", "List<T>", "<T>"} {
+		out, err := Render("flowchart TD\n  A[\""+label+"\"]", RenderOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if want := strings.NewReplacer("<", "&lt;", ">", "&gt;").Replace(label); !strings.Contains(out.Data, want) {
+			t.Errorf("%q: the label is not kept as escaped text", label)
+		}
+	}
+}
+
+// TestSankeyGradientsAreInert renders sankey links with gradients, which an idPrefix
+// turns on, from node colours and names that carry attack text.
+func TestSankeyGradientsAreInert(t *testing.T) {
+	for _, payload := range PAYLOADS {
+		quoted := `"` + strings.ReplaceAll(payload, `"`, `""`) + `"`
+		color := strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(payload)
+		src := "---\nconfig:\n  sankey:\n    nodeColors:\n      a: \"" + color + "\"\n      b: \"" + color + "\"\n---\nsankey\na,b,5\na," + quoted + ",3\n"
+		for _, prefix := range []string{"p1", "p_1-x", payload} {
+			checkInert(t, src, RenderOptions{IDPrefix: types.Ptr(prefix)})
+		}
+	}
+	out, err := Render("sankey\na,b,5\n", RenderOptions{IDPrefix: types.Ptr("p1")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.Data, "<linearGradient") {
+		t.Fatal("an idPrefix of word characters gives no gradient")
+	}
+}
+
+// TestInternalLinkHref: a note name goes into the href as written, so it gets the
+// check of a URL, and the check of the name as a browser reads it after Esc().
+func TestInternalLinkHref(t *testing.T) {
+	about := RenderOptions{LinkSchemes: []string{"about"}}
+	for _, head := range []string{"flowchart TD", "agentflow-beta TB", "erDiagram"} {
+		out, err := Render(head+"\n  A[\"javascript:alert(1)\"]:::internal-link", about)
+		if err != nil || strings.Contains(out.Data, " href=") {
+			t.Errorf("%s: an internal link to a script with about allowed: %v\n%s", head, err, out.Data)
+		}
+	}
+	for _, name := range []string{"Note", `Folder\note`, "Note%23heading", "👩‍💻", "Note#heading", "  Note  "} {
+		if !util.InternalLink(name, RenderOptions{}) {
+			t.Errorf("%q: not linked", name)
+		}
+	}
+	for _, name := range []string{"javascript:alert(1)", "java\ufffescript:alert(1)", `\\nevil.example`, "\t/\\nevil.example", "/\t/evil.example"} {
+		if util.InternalLink(name, about) {
+			t.Errorf("%q: linked", name)
+		}
 	}
 }
 

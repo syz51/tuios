@@ -54,7 +54,48 @@ func canvasRole(r plot.Role) uint8 {
 			return seriesRole(i)
 		}
 	}
+	switch r {
+	case plot.None, plot.Fg:
+		return roleText
+	}
 	return roleLine
+}
+
+// strokeOf is the strokes of each light box-drawing glyph.
+var strokeOf = func() map[rune]uint8 {
+	m := map[rune]uint8{}
+	for mask := len(joins) - 1; mask > 0; mask-- {
+		if _, ok := m[joins[mask]]; !ok {
+			m[joins[mask]] = uint8(mask)
+		}
+	}
+	m['│'], m['─'] = up|down, left|right
+	return m
+}()
+
+// paste copies a grid of tuios.dev/plot into the canvas from x0, y0: each
+// cell's text, its role and its ground.
+func (c *canvas) paste(g *plot.Grid, x0, y0 int) {
+	for y := 0; y < g.H; y++ {
+		for x := 0; x < g.W; x++ {
+			cell := g.At(x, y)
+			if cell.Text == "" || cell.Text == " " {
+				continue
+			}
+			r := []rune(cell.Text)[0]
+			if mask, ok := strokeOf[r]; ok && cell.Bg == plot.None {
+				// A line as strokes, so it joins the canvas's own lines and
+				// rows of plain vertical lines still close up.
+				c.stroke(x0+x, y0+y, mask, light, canvasRole(cell.Role))
+				continue
+			}
+			bg := uint8(roleNone)
+			if cell.Bg != plot.None {
+				bg = canvasRole(cell.Bg)
+			}
+			c.putBg(x0+x, y0+y, r, canvasRole(cell.Role), bg)
+		}
+	}
 }
 
 // xyLegend is the legend in lines of at most w cells: a mark in the colour of
@@ -131,10 +172,6 @@ func barParts(vals []float64, base float64) (up, down []float64) {
 	}
 	return up, down
 }
-
-// The eighth blocks plot draws across, and the blocks that stand to the left
-// that a bar on the other side of the base takes instead.
-var eighthRight = map[string]int{"▏": 1, "▎": 2, "▍": 3, "▌": 4, "▋": 5, "▊": 6, "▉": 7, "█": 8}
 
 // barGlyph reports whether r is a block a bar is drawn with.
 func barGlyph(r rune) bool {
@@ -320,16 +357,30 @@ func xyColumns(g *types.GeoXY, opt Options) (*canvas, error) {
 		if !s.Bar {
 			continue
 		}
-		role := seriesRole(si)
+		role := plot.SeriesRole(si)
 		up, down := barParts(slotValues(g, s), g.Base)
+		// tuios.dev/plot's columns, a column a slot, measured from the middle
+		// of the base row: up from it, and down from it, drawn up and turned.
+		upG := plot.Bar{Values: up, Min: 0, Max: 1, Role: role, Half: true}.Draw(g.Slots, xyRows-rb+1, plot.Braille)
+		var downG *plot.Grid
+		if rb > 0 {
+			downG = plot.Bar{Values: down, Min: 0, Max: 1, Role: role, Half: true}.Draw(g.Slots, rb+1, plot.Braille)
+		}
 		for i := 0; i < g.Slots; i++ {
 			x0 := center(i) - group/2 + k*thick
 			for dx := 0; dx < thick; dx++ {
-				if v := up[i]; !math.IsNaN(v) {
-					c.column(x0+dx, baseY, int(math.Round(v*float64((xyRows-rb)*8))), -1, top, role)
+				for r := 0; r < upG.H; r++ {
+					if cell := upG.At(i, r); cell.Text != "" && cell.Text != " " {
+						c.put(x0+dx, baseY-(upG.H-1-r), []rune(cell.Text)[0], canvasRole(cell.Role))
+					}
 				}
-				if v := down[i]; !math.IsNaN(v) {
-					c.column(x0+dx, baseY, int(math.Round(v*float64(rb*8))), 1, axisY, role)
+				if downG == nil {
+					continue
+				}
+				for r := 0; r < downG.H; r++ {
+					if cell := downG.At(i, r); cell.Text != "" && cell.Text != " " {
+						c.put(x0+dx, baseY+(downG.H-1-r), turnedDown([]rune(cell.Text)[0]), canvasRole(cell.Role))
+					}
 				}
 			}
 		}
@@ -447,28 +498,31 @@ func xyColumns(g *types.GeoXY, opt Options) (*canvas, error) {
 	return c, nil
 }
 
-// column draws a bar n eighths of a cell long from the middle of row y0, up
-// (step -1) or down (step 1), no further than row end. The first cell is a
-// half block. A bar under a quarter of a cell draws nothing.
-func (c *canvas) column(x, y0, n, step, end int, role uint8) {
-	if n < 2 {
-		return
+// turnedDown is the block a bar that hangs down from its base shows for the
+// block plot draws for a bar that stands up: the same length from the
+// other end of the cell.
+func turnedDown(r rune) rune {
+	switch {
+	case r == '▀':
+		return '▄'
+	case r >= '▁' && r <= '█':
+		return hanging(int(r - '▀'))
 	}
-	first := '▀'
-	if step > 0 {
-		first = '▄'
+	return r
+}
+
+// turnedLeft is the block a bar that runs left from its base shows for the
+// block plot draws for a bar that runs right.
+func turnedLeft(r rune) rune {
+	switch {
+	case r == '▐':
+		return '▌'
+	case r == '█':
+		return '█'
+	case r >= '▉' && r <= '▏':
+		return leftward(int('▐' - r))
 	}
-	c.put(x, y0, first, role)
-	n -= 4
-	for y := y0 + step; n > 0 && (y-end)*step <= 0; y += step {
-		lv := min(n, 8)
-		r := rune(0x2580 + lv) // ▁ to █
-		if step > 0 {
-			r = hanging(lv)
-		}
-		c.put(x, y, r, role)
-		n -= 8
-	}
+	return r
 }
 
 // bar reports whether the cell at x, y holds a block of a bar.
@@ -558,10 +612,9 @@ func xyAcross(g *types.GeoXY, opt Options) (*canvas, error) {
 		rows++
 	}
 	rows = max(rows, 1)
-	sep := 0
-	if rows > 1 {
-		sep = 1
-	}
+	// A blank row between categories, so bars on rows next to each other
+	// stay apart.
+	sep := 1
 	label := 0
 	for _, m := range g.Marks {
 		label = max(label, width(m.Label))
@@ -642,7 +695,7 @@ func xyAcross(g *types.GeoXY, opt Options) (*canvas, error) {
 		if !(t.At >= 0 && t.At <= 1) {
 			continue
 		}
-		cx := px0 + min(int(math.Round(t.At*float64(pw))), pw-1)
+		cx := axisX + min(int(math.Round(t.At*float64(pw))), pw)
 		x := min(max(cx-width(t.Label)/2, 0), wd-width(t.Label))
 		if x < next {
 			continue
@@ -655,8 +708,11 @@ func xyAcross(g *types.GeoXY, opt Options) (*canvas, error) {
 		c.text(px0+(pw-width(line))/2, labelY+1+i, line, roleHead)
 	}
 
+	// A value stands at the middle of a column, as its tick does, and a bar
+	// grows from the middle of the column of the base: its first cell is a
+	// half block over the axis line.
 	cb := int(math.Round(math.Min(math.Max(g.Base, 0), 1) * float64(pw)))
-	none := func(float64) string { return "" }
+	baseX := axisX + cb
 	k := 0
 	for si, s := range g.Series {
 		if !s.Bar {
@@ -664,29 +720,28 @@ func xyAcross(g *types.GeoXY, opt Options) (*canvas, error) {
 		}
 		role := plot.SeriesRole(si)
 		up, down := barParts(slotValues(g, s), g.Base)
-		var upG, downG *plot.Grid
-		if pw-cb > 0 {
-			upG = plot.Bar{Values: up, Min: 0, Max: 1, Role: role, Horizontal: true, Format: none}.Draw(pw-cb, g.Slots, plot.Braille)
-		}
+		// tuios.dev/plot's bars across, a row a slot, measured from the middle
+		// of the base column: right from it, and left from it, drawn right and
+		// turned.
+		none := func(float64) string { return "" }
+		rightG := plot.Bar{Values: up, Min: 0, Max: 1, Role: role, Horizontal: true, Format: none, Half: true}.Draw(pw-cb+1, g.Slots, plot.Braille)
+		var leftG *plot.Grid
 		if cb > 0 {
-			downG = plot.Bar{Values: down, Min: 0, Max: 1, Role: role, Horizontal: true, Format: none}.Draw(cb, g.Slots, plot.Braille)
+			leftG = plot.Bar{Values: down, Min: 0, Max: 1, Role: role, Horizontal: true, Format: none, Half: true}.Draw(cb+1, g.Slots, plot.Braille)
 		}
 		for i := 0; i < g.Slots; i++ {
 			ry := top + i*(rows+sep) + k
-			if upG != nil {
-				for x := 0; x < upG.W; x++ {
-					cell := upG.At(x, i)
-					if cell.Text != "" && cell.Text != " " {
-						c.put(px0+cb+x, ry, []rune(cell.Text)[0], canvasRole(cell.Role))
-					}
+			for x := 0; x < rightG.W; x++ {
+				if cell := rightG.At(x, i); cell.Text != "" && cell.Text != " " {
+					c.put(baseX+x, ry, []rune(cell.Text)[0], canvasRole(cell.Role))
 				}
 			}
-			if downG != nil {
-				for x := 0; x < downG.W; x++ {
-					cell := downG.At(x, i)
-					if lv := eighthRight[cell.Text]; lv > 0 {
-						c.put(px0+cb-1-x, ry, leftward(lv), canvasRole(cell.Role))
-					}
+			if leftG == nil {
+				continue
+			}
+			for x := 0; x < leftG.W; x++ {
+				if cell := leftG.At(x, i); cell.Text != "" && cell.Text != " " {
+					c.put(baseX-x, ry, turnedLeft([]rune(cell.Text)[0]), canvasRole(cell.Role))
 				}
 			}
 		}
@@ -700,7 +755,7 @@ func xyAcross(g *types.GeoXY, opt Options) (*canvas, error) {
 			if !(p.Value >= 0 && p.Value <= 1) {
 				continue
 			}
-			x := px0 + min(int(math.Round(p.Value*float64(pw-1))), pw-1)
+			x := axisX + min(int(math.Round(p.Value*float64(pw))), pw)
 			c.put(x, rowOf(p.At)+bars, '●', seriesRole(si))
 		}
 	}
@@ -721,14 +776,15 @@ func xyAcross(g *types.GeoXY, opt Options) (*canvas, error) {
 			ry := top + i*(rows+sep) + k
 			lw := width(p.Label)
 			if p.Value < g.Base {
-				x := px0 + cb - 1
-				for x >= px0 && c.bar(x, ry) {
+				x := baseX
+				for x >= axisX && c.bar(x, ry) {
 					x--
 				}
-				c.label(p.Label, top, axisY, [2]int{x - lw, ry})
+				// Past the end of the bar, or else on the other side of the base.
+				c.label(p.Label, top, axisY, [2]int{x - lw, ry}, [2]int{baseX + 2, ry})
 			} else {
-				x := px0 + cb
-				for x < px0+pw && c.bar(x, ry) {
+				x := baseX
+				for x <= axisX+pw && c.bar(x, ry) {
 					x++
 				}
 				c.label(p.Label, top, axisY, [2]int{x + 1, ry})
@@ -744,7 +800,7 @@ func xyAcross(g *types.GeoXY, opt Options) (*canvas, error) {
 			if p.Label == "" || !(p.Value >= 0 && p.Value <= 1) {
 				continue
 			}
-			x := px0 + min(int(math.Round(p.Value*float64(pw-1))), pw-1)
+			x := axisX + min(int(math.Round(p.Value*float64(pw))), pw)
 			y := rowOf(p.At) + bars
 			c.label(p.Label, top, axisY, [2]int{x + 2, y}, [2]int{x - 1 - width(p.Label), y})
 		}

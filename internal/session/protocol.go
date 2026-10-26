@@ -182,6 +182,11 @@ const (
 	// state and the version, or a mark that it closed. The daemon sends it
 	// only to a client whose hello set TMLSurfaces. See tml_surface.go.
 	MsgTMLSurface
+	// MsgPluginApprovals lists the native plugins that wait for the
+	// person's approval on this machine (PluginApprovalsPayload). An empty
+	// list closes the client's dialog. The daemon sends it only to a client
+	// whose hello set PluginApprovals. See plugin_approval.go.
+	MsgPluginApprovals
 )
 
 // WatchDirPayload is the body of MsgWatchDir. WindowID is the pane the folder
@@ -314,6 +319,10 @@ type HelloPayload struct {
 	// MsgTMLSurface. The daemon sends it to no other client. See
 	// tml_surface.go.
 	TMLSurfaces bool `json:"tml_surfaces,omitzero"`
+	// PluginApprovals says the client asks the person about native plugins
+	// that wait for approval: it reads MsgPluginApprovals. The daemon sends
+	// it to no other client. See plugin_approval.go.
+	PluginApprovals bool `json:"plugin_approvals,omitzero"`
 }
 
 // WelcomePayload is sent by server in response to Hello.
@@ -412,9 +421,9 @@ type AttachPayload struct {
 	// renderer commands (for example a session shown in a sidebar rail).
 	// Command routing skips it; its viewport does not size the shared session.
 	Passive bool `json:"passive,omitempty"`
-	// Cwd is the start directory of a session this attach creates (CreateNew
-	// and no session by that name). See NewPayload.Cwd. An attach to a
-	// session that exists ignores it.
+	// Cwd is the start directory of a session this attach creates, whether
+	// unnamed/default or named with CreateNew. See NewPayload.Cwd. An attach
+	// to a session that exists ignores it.
 	Cwd string `json:"cwd,omitempty"`
 	// DetachOthers takes every other client off the session as this one
 	// attaches, as tuios attach -d asks. See detach_client.go. An older
@@ -871,6 +880,13 @@ type ExecuteCommandPayload struct {
 	// sends it for the pane it opens on an empty workspace, and only to a
 	// daemon whose welcome set EmptyWorkspacePanes.
 	FocusIfShown bool `json:"focus_if_shown,omitempty"`
+	// TabKey is the herdr tab key of Workspace as the client last saw it
+	// (see SessionState.WorkspaceTabKey). The pane a client opens on an empty
+	// workspace is asked for right after the switch that shows it, and the
+	// switch can leave a workspace below it empty, which renumbers it before
+	// the request lands. The key still names it. An older daemon ignores it
+	// and reads Workspace.
+	TabKey int `json:"tab_key,omitempty"`
 }
 
 // CommandResultPayload contains the result of a remote command execution.

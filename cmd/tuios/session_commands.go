@@ -419,8 +419,15 @@ func runDaemonSessionOn(host, sessionName string, createNew bool) error {
 	// The detached and verb paths send it too.
 	client.UseCallerTerm()
 	if host == "" && createNew {
-		// Only tuios new sets it. A session the attach finds is not moved.
+		// tuios new may supply --cwd. The daemon ignores the directory if
+		// this attach finds a session that already exists.
 		client.StartDir = newSessionDir
+	}
+	if host == "" && sessionName == "" && client.StartDir == "" {
+		// A bare local attach may create the default session. Its first
+		// window starts where this client was invoked, not where the daemon
+		// happened to start.
+		client.StartDir, _ = os.Getwd()
 	}
 	// The real host size, asked for here rather than left at a placeholder.
 	//
@@ -540,11 +547,12 @@ func runDaemonSessionOn(host, sessionName string, createNew bool) error {
 	// that fills it is what wedges the loop. finish runs once the cleanup
 	// below is done, so a Ctrl+C during it cannot leave the terminal raw. See
 	// armSignalQuit.
-	finish := armSignalQuit(p)
+	runReturned, finish := armSignalQuit(p)
 
 	// See withoutHardTabs: tmux drops the background under a tab.
 	restoreTabs := withoutHardTabs()
 	finalModel, err := p.Run()
+	runReturned()
 	restoreTabs()
 
 	reason := app.ExitNormal
@@ -1193,6 +1201,16 @@ func runDaemon(foreground, disableAutoRestore bool) error {
 		return startDaemonBackground()
 	}
 
+	daemonCfg := foregroundDaemonConfig()
+	daemonCfg.DisableAutoRestore = disableAutoRestore
+	daemon := session.NewDaemon(daemonCfg)
+
+	return daemon.Run()
+}
+
+// foregroundDaemonConfig is the configuration of the daemon this process
+// runs, with its logging installed.
+func foregroundDaemonConfig() *session.DaemonConfig {
 	// The file's daemon settings first, the same way every other starter maps
 	// them, then what only this command knows.
 	var daemonCfg *session.DaemonConfig
@@ -1202,7 +1220,7 @@ func runDaemon(foreground, disableAutoRestore bool) error {
 		daemonCfg = session.DaemonConfigFromUser(nil)
 	}
 	daemonCfg.Version = version
-	daemonCfg.DisableAutoRestore = disableAutoRestore
+	daemonCfg.HandoffArgs = handoffArgs
 	// A terminal on stderr is what makes this daemon a foreground one for
 	// logging. `tuios daemon` is also the command startDaemonBackground
 	// spawns for a detached daemon, with stderr pointed at the log file, so
@@ -1217,10 +1235,7 @@ func runDaemon(foreground, disableAutoRestore bool) error {
 	// is what answers "did my hook run at all". The sinks are in place above,
 	// so the line reaches the ring and the file in a background daemon.
 	hooks.SetVerbose(session.GetDebugLevel() >= session.DebugBasic)
-
-	daemon := session.NewDaemon(daemonCfg)
-
-	return daemon.Run()
+	return daemonCfg
 }
 
 func runKillDaemon(restart bool) error {

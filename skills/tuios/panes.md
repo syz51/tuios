@@ -4,6 +4,55 @@ The part of the skill about panes as places to run work: making a session,
 opening panes, getting an exit code back, waiting without being fooled, and
 moving panes around with verbs rather than keybindings.
 
+## Your pane
+
+A pane that the daemon manages has these variables:
+
+```
+TUIOS_ENV=1
+TUIOS_PANE_ID=98db8226-1829-468e-89a8-41a2baa0ddab
+TUIOS_WINDOW_ID=98db8226-1829-468e-89a8-41a2baa0ddab
+TUIOS_SESSION=work
+TUIOS_SOCKET=/run/user/1000/tuios/tuios.sock
+TUIOS_HOST=laptop
+TUIOS_PANE_TOKEN=3f9a...
+TUIOS_PANE_GRANTS=admin
+```
+
+- `TUIOS_PANE_ID` and `TUIOS_WINDOW_ID` hold the same uuid: your pane. Other
+  agents use it to reach you. Pass it to `-w` when you mean your own pane.
+- The CLI sends `TUIOS_PANE_TOKEN` to the daemon when it needs it. Do not
+  pass it yourself.
+- `TUIOS_SOCKET` names the daemon that runs your pane. A command refuses a
+  socket where nothing listens. To run a daemon of your own, with its own
+  socket and saved sessions, pass `--server NAME` or set `TUIOS_SERVER=NAME`.
+  Stop it with `tuios --server NAME kill-server`.
+- `TMUX` and `TMUX_PANE` are not set, even when tuios runs inside tmux. Do not
+  drive panes with `tmux` here. A tool that knows only tmux can run under the
+  shim (`tuios --skill tmux`).
+- `TUIOS_RESTORED=1` marks a pane that a daemon restart brought back. It is a
+  new shell in the old place.
+- `TUIOS_PANE_HOSTED=1`, with no `TUIOS_ENV`, marks a pane whose process runs
+  on another machine (`tuios --skill hosts`).
+- A standalone `tuios` has no daemon and no socket. Check `TUIOS_ENV` before
+  you call the daemon, and skip the call when it is not set.
+
+`tuios pane-grants` shows what your pane may do (`tuios --skill grants`).
+
+## Reading a pane
+
+```sh
+tuios capture-pane -s work -w build --scrollback --lines 40
+```
+
+- Without `--scrollback` you get the visible screen, which ends in the blank
+  rows below the cursor. `--trim` drops those rows.
+- `--lines` counts back from the last line with content. Capture a
+  full-screen program without `--lines`, because its screen has a fixed size.
+- A line longer than the pane comes back as several rows. `--unwrap` joins
+  them, so a search finds a long path or URL.
+- Leave `--ansi` off when you match text.
+
 ## A session of your own
 
 To set up a workspace instead of driving one that exists, create the session
@@ -34,9 +83,13 @@ with the names that do exist, so pick another name rather than assuming you took
 it over.
 
 `tuios session-info -s work` reports the workspace you are on, how many exist,
-the tiling mode, any workspace names and, when the workspaces were rearranged,
-their display `order`. They keep their numbers, so `select-workspace 2` still
-means workspace 2.
+the tiling mode and any workspace names. A workspace's number is its position:
+moving one, with the move keys, by dragging its dock pill or with
+`set-workspace-order`, renumbers it, and `select-workspace 2` then means
+whatever workspace is second now. Closing a pane or a workspace closes up
+the numbers above an empty place, and so does `exit` typed in a pane's own
+shell. A pane whose program exits on its own (a command, `close_on_exit`)
+renumbers nothing, so a number you read stays good until a close or a move.
 
 ## Opening a pane and running work in it
 
@@ -109,7 +162,8 @@ its item. Without `-s`, `-c` is typed into the pane's shell, which stays.
 `-s` runs it with no shell and holds the pane until Enter; `-ss` closes the
 pane when it exits. `--interval` spaces the panes. `--session` names the
 session (`-s` is speedy mode, as in tmux-xpanes). `tuios close-workspace N`
-closes them all, like tmux kill-window. When the last of them closes, the
+closes them all, like tmux kill-window, and the workspaces above N move down
+one. When the last of them closes, the
 session goes back to the workspace that ran `xpanes`. `--json` prints the window ids. The layout and
 multifocus need an attached client; without one the panes open and a warning
 says so. More than 64 panes needs `--force`. For work you drive yourself, open
@@ -132,6 +186,8 @@ tuios list-windows --json | jq -r '.windows[] | "\(.index)\t\(.window_id)"' |
     tuios capture-pane -w "$id" --lines 20
   done
 ```
+
+`capture-pane --scrollback` keeps the last 3 commands in at most 2000 lines, and `--commands N` keeps the last N. Give `--lines 0` only when you need the whole history.
 
 A person can do the same by hand with multi copy mode. They add the panes to
 multifocus, press `Ctrl+B [`, search once, press `V` and `y`. tuios copies the
@@ -282,6 +338,8 @@ tuios capture-pane -s work -w build --scrollback --lines 60
 
 The echo shows `printf 'tests_done_%s\n' 1786700000`, which the pattern does not
 match; the output shows `tests_done_1786700000`, which it does.
+
+`--new` matches only output written after the wait starts, so an old marker does not match. Output from before the wait does not count, so do not use `--new` for a command that can finish at once.
 
 ### Running a command and getting its exit code
 

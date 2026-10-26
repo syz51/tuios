@@ -1,3 +1,6 @@
+> [!WARNING]
+> **An account on X called @tuiosdev is pretending to be tuios. It is not this project.** tuios has no X or Twitter account. It lives only at [tuios.dev](https://tuios.dev) and in this repository. There is no tuios token or presale. Please report that account if you see it.
+
 <div align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="./assets/brand/banner-dark.png">
@@ -107,13 +110,38 @@ docker run -it --rm ghcr.io/gaurav-gosain/tuios:latest
 
 **[GitHub Releases](https://github.com/Gaurav-Gosain/tuios/releases)**: Pre-built binaries for Linux, macOS, Windows, FreeBSD and OpenBSD, with a `checksums.txt`. The `tuios-ghostty_*` archives are `tuios` built on the [libghostty-vt emulator](./docs/ghostty-vt.md), for Linux, macOS and Windows on amd64 and arm64.
 
-**Building from source** needs Go 1.26.6 or newer.
+**Building from source** needs Go 1.26.8 or newer.
 
 **Updating.** If you installed with the quick install script or a release
 binary, `tuios update` fetches the newest release and puts it in place
 (`tuios update --check` just reports). Everything else has a package manager
 that owns the binary, so use that instead; `tuios update` detects which you have
 and prints the right command rather than overwriting it.
+
+### Shell Completions
+
+`tuios completion <shell>` prints a completion script for bash, zsh, fish or
+PowerShell. Besides subcommands and flags, it completes values such as session
+names for `--session` and configured hosts for `--host`.
+
+```bash
+# Bash (needs the bash-completion package)
+tuios completion bash > ~/.local/share/bash-completion/completions/tuios
+
+# Zsh (the directory must be on your $fpath, before compinit runs)
+tuios completion zsh > "${fpath[1]}/_tuios"
+
+# Fish
+tuios completion fish > ~/.config/fish/completions/tuios.fish
+```
+
+```powershell
+# PowerShell: add this line to your $PROFILE
+tuios completion powershell | Out-String | Invoke-Expression
+```
+
+Start a new shell afterwards. Run `tuios completion <shell> --help` for more
+options, or see the [CLI reference](docs/CLI_REFERENCE.md#tuios-completion).
 
 **Requirements:** A terminal with true color support. Kitty graphics and sixel support recommended (Ghostty, Kitty, WezTerm).
 
@@ -372,44 +400,50 @@ Thank you to everyone who helps build tuios. To join them, read the [contributin
 <a href="https://github.com/cr2007" title="cr2007"><img src="https://avatars.githubusercontent.com/u/73425927?s=128&amp;v=4" width="64" height="64" alt="cr2007" title="cr2007"></a>
 <a href="https://github.com/SebaWag" title="SebaWag"><img src="https://avatars.githubusercontent.com/u/251644039?s=128&amp;v=4" width="64" height="64" alt="SebaWag" title="SebaWag"></a>
 <a href="https://github.com/Tim4c" title="Tim4c"><img src="https://avatars.githubusercontent.com/u/9990855?s=128&amp;v=4" width="64" height="64" alt="Tim4c" title="Tim4c"></a>
+<a href="https://github.com/vvicaretti" title="vvicaretti"><img src="https://avatars.githubusercontent.com/u/25300130?s=128&amp;v=4" width="64" height="64" alt="vvicaretti" title="vvicaretti"></a>
 <a href="https://github.com/drawde-nadroj" title="drawde-nadroj"><img src="https://avatars.githubusercontent.com/u/107078793?s=128&amp;v=4" width="64" height="64" alt="drawde-nadroj" title="drawde-nadroj"></a>
 <a href="https://github.com/kylesnowschwartz" title="kylesnowschwartz"><img src="https://avatars.githubusercontent.com/u/11069001?s=128&amp;v=4" width="64" height="64" alt="kylesnowschwartz" title="kylesnowschwartz"></a>
 <a href="https://github.com/SugarHashira" title="SugarHashira"><img src="https://avatars.githubusercontent.com/u/106308062?s=128&amp;v=4" width="64" height="64" alt="SugarHashira" title="SugarHashira"></a>
-<a href="https://github.com/vvicaretti" title="vvicaretti"><img src="https://avatars.githubusercontent.com/u/25300130?s=128&amp;v=4" width="64" height="64" alt="vvicaretti" title="vvicaretti"></a>
 <br>
-<a href="https://github.com/fonnesbeck" title="fonnesbeck"><img src="https://avatars.githubusercontent.com/u/81476?s=128&amp;v=4" width="64" height="64" alt="fonnesbeck" title="fonnesbeck"></a>
-<a href="https://github.com/masshirodev" title="masshirodev"><img src="https://avatars.githubusercontent.com/u/21976638?s=128&amp;v=4" width="64" height="64" alt="masshirodev" title="masshirodev"></a>
+<a href="https://github.com/syz51" title="syz51"><img src="https://avatars.githubusercontent.com/u/54097388?s=128&amp;v=4" width="64" height="64" alt="syz51" title="syz51"></a>
 <a href="https://github.com/NotAFlightRisk" title="NotAFlightRisk"><img src="https://avatars.githubusercontent.com/u/23277273?s=128&amp;v=4" width="64" height="64" alt="NotAFlightRisk" title="NotAFlightRisk"></a>
+<a href="https://github.com/fonnesbeck" title="fonnesbeck"><img src="https://avatars.githubusercontent.com/u/81476?s=128&amp;v=4" width="64" height="64" alt="fonnesbeck" title="fonnesbeck"></a>
 <a href="https://github.com/LeeSamuel14" title="LeeSamuel14"><img src="https://avatars.githubusercontent.com/u/37692342?s=128&amp;v=4" width="64" height="64" alt="LeeSamuel14" title="LeeSamuel14"></a>
+<a href="https://github.com/masshirodev" title="masshirodev"><img src="https://avatars.githubusercontent.com/u/21976638?s=128&amp;v=4" width="64" height="64" alt="masshirodev" title="masshirodev"></a>
+<a href="https://github.com/AdrielVelazquez" title="AdrielVelazquez"><img src="https://avatars.githubusercontent.com/u/3443378?s=128&amp;v=4" width="64" height="64" alt="AdrielVelazquez" title="AdrielVelazquez"></a>
 <a href="https://github.com/noomz" title="noomz"><img src="https://avatars.githubusercontent.com/u/24957?s=128&amp;v=4" width="64" height="64" alt="noomz" title="noomz"></a>
 <a href="https://github.com/ShalokShalom" title="ShalokShalom"><img src="https://avatars.githubusercontent.com/u/6344099?s=128&amp;v=4" width="64" height="64" alt="ShalokShalom" title="ShalokShalom"></a>
+<a href="https://github.com/agammann" title="agammann"><img src="https://avatars.githubusercontent.com/u/161159040?s=128&amp;v=4" width="64" height="64" alt="agammann" title="agammann"></a>
 <a href="https://github.com/dreuss" title="dreuss"><img src="https://avatars.githubusercontent.com/u/472909?s=128&amp;v=4" width="64" height="64" alt="dreuss" title="dreuss"></a>
+<br>
 <a href="https://github.com/Gsirawan" title="Gsirawan"><img src="https://avatars.githubusercontent.com/u/7770085?s=128&amp;v=4" width="64" height="64" alt="Gsirawan" title="Gsirawan"></a>
 <a href="https://github.com/JakeChop" title="JakeChop"><img src="https://avatars.githubusercontent.com/u/13514802?s=128&amp;v=4" width="64" height="64" alt="JakeChop" title="JakeChop"></a>
 <a href="https://github.com/nathan-poncet" title="nathan-poncet"><img src="https://avatars.githubusercontent.com/u/112613712?s=128&amp;v=4" width="64" height="64" alt="nathan-poncet" title="nathan-poncet"></a>
-<br>
 <a href="https://github.com/NSPC911" title="NSPC911"><img src="https://avatars.githubusercontent.com/u/87571998?s=128&amp;v=4" width="64" height="64" alt="NSPC911" title="NSPC911"></a>
-<a href="https://github.com/syz51" title="syz51"><img src="https://avatars.githubusercontent.com/u/54097388?s=128&amp;v=4" width="64" height="64" alt="syz51" title="syz51"></a>
 <a href="https://github.com/actes2" title="actes2"><img src="https://avatars.githubusercontent.com/u/101230792?s=128&amp;v=4" width="64" height="64" alt="actes2" title="actes2"></a>
 <a href="https://github.com/AdamMagued" title="AdamMagued"><img src="https://avatars.githubusercontent.com/u/197814922?s=128&amp;v=4" width="64" height="64" alt="AdamMagued" title="AdamMagued"></a>
+<a href="https://github.com/adestis-bm" title="adestis-bm"><img src="https://avatars.githubusercontent.com/u/70651878?s=128&amp;v=4" width="64" height="64" alt="adestis-bm" title="adestis-bm"></a>
 <a href="https://github.com/chenxin-yan" title="chenxin-yan"><img src="https://avatars.githubusercontent.com/u/71162231?s=128&amp;v=4" width="64" height="64" alt="chenxin-yan" title="chenxin-yan"></a>
 <a href="https://github.com/chexxor" title="chexxor"><img src="https://avatars.githubusercontent.com/u/843161?s=128&amp;v=4" width="64" height="64" alt="chexxor" title="chexxor"></a>
 <a href="https://github.com/ci4ic4" title="ci4ic4"><img src="https://avatars.githubusercontent.com/u/6495973?s=128&amp;v=4" width="64" height="64" alt="ci4ic4" title="ci4ic4"></a>
+<br>
 <a href="https://github.com/Cjreek" title="Cjreek"><img src="https://avatars.githubusercontent.com/u/10603492?s=128&amp;v=4" width="64" height="64" alt="Cjreek" title="Cjreek"></a>
 <a href="https://github.com/dodorz" title="dodorz"><img src="https://avatars.githubusercontent.com/u/1287424?s=128&amp;v=4" width="64" height="64" alt="dodorz" title="dodorz"></a>
 <a href="https://github.com/ethanhawkes-gif" title="ethanhawkes-gif"><img src="https://avatars.githubusercontent.com/u/259455325?s=128&amp;v=4" width="64" height="64" alt="ethanhawkes-gif" title="ethanhawkes-gif"></a>
-<br>
 <a href="https://github.com/FaintFlower" title="FaintFlower"><img src="https://avatars.githubusercontent.com/u/310248465?s=128&amp;v=4" width="64" height="64" alt="FaintFlower" title="FaintFlower"></a>
 <a href="https://github.com/fdoving" title="fdoving"><img src="https://avatars.githubusercontent.com/u/26197922?s=128&amp;v=4" width="64" height="64" alt="fdoving" title="fdoving"></a>
 <a href="https://github.com/Guipegoraro" title="Guipegoraro"><img src="https://avatars.githubusercontent.com/u/97493836?s=128&amp;v=4" width="64" height="64" alt="Guipegoraro" title="Guipegoraro"></a>
 <a href="https://github.com/humaidq" title="humaidq"><img src="https://avatars.githubusercontent.com/u/10805493?s=128&amp;v=4" width="64" height="64" alt="humaidq" title="humaidq"></a>
+<a href="https://github.com/Ian-q" title="Ian-q"><img src="https://avatars.githubusercontent.com/u/102885126?s=128&amp;v=4" width="64" height="64" alt="Ian-q" title="Ian-q"></a>
 <a href="https://github.com/j4ng5y" title="j4ng5y"><img src="https://avatars.githubusercontent.com/u/44218998?s=128&amp;v=4" width="64" height="64" alt="j4ng5y" title="j4ng5y"></a>
 <a href="https://github.com/jacob-sabella" title="jacob-sabella"><img src="https://avatars.githubusercontent.com/u/179399841?s=128&amp;v=4" width="64" height="64" alt="jacob-sabella" title="jacob-sabella"></a>
+<br>
 <a href="https://github.com/juancely" title="juancely"><img src="https://avatars.githubusercontent.com/u/13281333?s=128&amp;v=4" width="64" height="64" alt="juancely" title="juancely"></a>
+<a href="https://github.com/Louranicas" title="Louranicas"><img src="https://avatars.githubusercontent.com/u/141467110?s=128&amp;v=4" width="64" height="64" alt="Louranicas" title="Louranicas"></a>
 <a href="https://github.com/mathomp4" title="mathomp4"><img src="https://avatars.githubusercontent.com/u/2982494?s=128&amp;v=4" width="64" height="64" alt="mathomp4" title="mathomp4"></a>
 <a href="https://github.com/neomantra" title="neomantra"><img src="https://avatars.githubusercontent.com/u/26842?s=128&amp;v=4" width="64" height="64" alt="neomantra" title="neomantra"></a>
+<a href="https://github.com/noelmiller" title="noelmiller"><img src="https://avatars.githubusercontent.com/u/4983138?s=128&amp;v=4" width="64" height="64" alt="noelmiller" title="noelmiller"></a>
 <a href="https://github.com/ronisbr" title="ronisbr"><img src="https://avatars.githubusercontent.com/u/1068295?s=128&amp;v=4" width="64" height="64" alt="ronisbr" title="ronisbr"></a>
-<br>
 <a href="https://github.com/ryan4yin" title="ryan4yin"><img src="https://avatars.githubusercontent.com/u/22363274?s=128&amp;v=4" width="64" height="64" alt="ryan4yin" title="ryan4yin"></a>
 <a href="https://github.com/stevegt" title="stevegt"><img src="https://avatars.githubusercontent.com/u/591668?s=128&amp;v=4" width="64" height="64" alt="stevegt" title="stevegt"></a>
 <a href="https://github.com/ural89" title="ural89"><img src="https://avatars.githubusercontent.com/u/25570740?s=128&amp;v=4" width="64" height="64" alt="ural89" title="ural89"></a>

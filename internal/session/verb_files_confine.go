@@ -216,6 +216,38 @@ var linkReadDenyOnlyHome = []string{
 	"Library/Application Support/BraveSoftware",
 	"Library/Cookies",
 	"Library/Safari",
+	// Browsers and mail installed as snaps and flatpaks keep their
+	// profiles here: the snap's own home, and a flatpak's whole data.
+	"snap/firefox/common/.mozilla",
+	"snap/chromium/common/chromium",
+	"snap/thunderbird/common/.thunderbird",
+	".var/app",
+	// Mail, chat and editor state: signed-in sessions and tokens.
+	".thunderbird",
+	"Library/Thunderbird",
+	".config/Code",
+	"Library/Application Support/Code",
+	".config/Signal",
+	"Library/Application Support/Signal",
+	".config/discord",
+	"Library/Application Support/discord",
+	".config/Slack",
+	"Library/Application Support/Slack",
+	".local/share/TelegramDesktop",
+	// Crypto wallets.
+	".bitcoin",
+	".electrum",
+	".ethereum",
+	".monero",
+	".litecoin",
+	".config/solana",
+	".config/Exodus",
+	"Library/Application Support/Bitcoin",
+	"Library/Application Support/Exodus",
+	"Library/Application Support/Electrum",
+	"AppData/Roaming/Bitcoin",
+	"AppData/Roaming/Electrum",
+	"AppData/Roaming/Exodus",
 	// Password managers and the tokens of other tools.
 	".config/Bitwarden",
 	".config/1Password",
@@ -601,12 +633,7 @@ func (k denyKeys) holds(p string) bool {
 // covers reports whether p is at or inside an entry.
 func (k denyKeys) covers(p string) bool {
 	fp := newDenyKey(p)
-	for _, c := range k {
-		if fp.under(c) {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(k, fp.under)
 }
 
 // denyKeysTTL is how long a prepared deny list is used. Its entries change

@@ -198,6 +198,7 @@ With no theme set, tuios uses the terminal's own colors.
 **Popular themes include:**
 - `charmtone`: Charm's CharmTone colours on a dark ground, with a Charple accent
 - `charmtone-light`: CharmTone on a light ground
+- `gilt`: Cool obsidian, warm parchment and a gold accent
 - `tokyonight`: A clean, dark theme with vibrant colors
 - `dracula`: Dark theme with purple accent
 - `nord`: An arctic, north-bluish color palette
@@ -271,6 +272,13 @@ tuios look apply tuios.dev/r/<id>
 tuios look apply https://example.com/my.look.toml
 tuios look apply ./my.look.toml
 
+# Choose a look from the gallery list, and apply it
+tuios look pick
+
+# List the gallery looks: id, name and author
+tuios look list
+tuios look list --json
+
 # Show the look in use
 tuios look show
 
@@ -288,20 +296,60 @@ tuios look keys --json
   local file. tuios downloads only over https.
 - tuios shows the changes and asks before it writes. Use `--yes` to skip the
   question. A run with no terminal needs `--yes`.
-- tuios writes the look to `config.d/look.toml`. It does not change
-  `config.toml`.
+- tuios writes the look to `config.d/look.toml`. Without a take-over, it
+  does not change `config.toml`.
 - A theme or glyph set in the look goes into the themes or glyphs folder. Its
   name starts with `look-`.
 - A running tuios reloads the config. You do not restart.
 - A look can set only look keys. tuios leaves out every other key and names
   it. A value that is not correct stops the look.
 - `config.toml` wins over `config.d`. tuios names each key that `config.toml`
-  sets, because the look does not change that key.
+  or a later `config.d` file sets, because the look does not change that key.
+- tuios then asks: "Let the look set these keys?" A yes is a take-over. tuios
+  removes the keys from those files and saves your values in
+  `config.d/look.saved.json`. The comments and the order of the files stay.
+- `--take-over` answers yes. `--yes` alone answers no, so a script keeps its
+  config. Use `--yes --take-over` for both.
+- A file that tuios cannot write keeps its keys, and so does a file that
+  another file includes. tuios names the file and the keys.
 - A new look replaces the look in use.
 - A config folder that tuios cannot write stops the command.
 
+`tuios look pick` shows the looks of the gallery, each with its name, its
+author and the colours of its theme. `tuios look` with no command does the
+same in a terminal. The command palette has it as "Choose a look", which
+opens it in a new pane.
+
+- Up and down move. Enter applies the look. Esc closes the list.
+- Enter asks the same questions as `tuios look apply`, the take-over question
+  too. `--take-over` answers that question yes.
+- `tuios look list` prints the id, the name and the author of each look.
+  `--json` adds the colours of each theme.
+- The list comes from `tuios.dev/gallery/feed`. When tuios cannot get it, the
+  command says so and exits with an error.
+
 `tuios look remove` deletes `config.d/look.toml` and the theme and glyph set
-that the look installed. Use `--yes` to skip the question.
+that the look installed. Use `--yes` to skip the question. After a take-over,
+it puts your saved values back:
+
+- A file that you did not change since the take-over goes back byte for byte.
+- In a file that you changed, tuios puts back each saved key that the file
+  does not set.
+- A key that you set again after the take-over keeps your newer value. tuios
+  names it.
+- A file that you deleted stays deleted. tuios names the keys it does not put
+  back.
+- When tuios cannot write a key back, the look stays and the key stays saved.
+  Fix the file, then run `tuios look remove` again.
+- When `config.d/look.saved.json` cannot be read, tuios asks before it removes
+  the look without the saved values. It moves the file aside and does not
+  delete it.
+- When `config.d/look.toml` is gone, `tuios look remove` still puts the saved
+  values back.
+
+A new look applied over a take-over puts back the saved keys that the new look
+does not set. tuios reads each file again before it writes it. If a file
+changed while tuios asked its questions, tuios stops and changes nothing.
 
 ---
 
@@ -1256,17 +1304,23 @@ attached and whichever window has the focus. Without `-w` they go to the
 attached client as if the person pressed them, which drives the window manager
 or the focused window; with no client attached they go to the focused window.
 
+From inside a pane, `-w` is required. A pane does not send keys into a pane
+that waits on a prompt (`needs_input`). To answer that prompt, pass
+`--allow-blocked`. It also needs the `respond` grant. You, outside every pane,
+are held to neither rule.
+
 **Usage:**
 ```bash
 tuios send-keys <keys> [flags]
 ```
 
 **Flags:**
-- `-s, --session <name>`: Target session (default: most recently active)
+- `-s, --session <name>`: Target session (default: this pane's session, else the most recently active)
 - `-w, --window <target>`: Target window: full id, the index `list-windows` prints, the exact name, or a unique id prefix (default: the attached client, else the focused window)
 - `-N, --repeat <n>`: Send the whole sequence n times, 1 to 1000 (default 1)
 - `-l, --literal`: Write the argument to the window's terminal unchanged, with no key names
 - `-r, --raw`: Treat each character as a separate key (no splitting on space/comma)
+- `--allow-blocked`: From a pane, send keys into a pane that waits on a prompt. Read the prompt first
 - `--json`: Output the result as JSON
 
 **Output:**
@@ -1338,14 +1392,18 @@ Nothing in the argument is interpreted, so spaces, quotes and punctuation
 arrive as typed. A trailing newline is the Enter that runs the line, which
 makes this one call where `send-keys` needs two.
 
+From inside a pane, `-w` is required, and a pane does not type into a pane on
+`needs_input` without `--allow-blocked`, as for `send-keys`.
+
 **Usage:**
 ```bash
 tuios send-text <text> [flags]
 ```
 
 **Flags:**
-- `-s, --session <name>`: Target session (default: most recently active)
+- `-s, --session <name>`: Target session (default: this pane's session, else the most recently active)
 - `-w, --window <id-or-name>`: Target window (default: focused)
+- `--allow-blocked`: From a pane, type into a pane that waits on a prompt. Read the prompt first
 - `--json`: Output the result as JSON. Without it the command prints nothing, and a failure exits `1`
 
 **Examples:**
@@ -1374,7 +1432,7 @@ tuios list-buffers [--json]
 tuios show-buffer [-b <name>] [--json]
 tuios set-buffer [-b <name>] [-a] [<text> | -] [--json]
 tuios delete-buffer [-b <name>] [--json]
-tuios paste-buffer [-b <name>] [-s <session>] [-w <window>] [-d] [-r] [--json]
+tuios paste-buffer [-b <name>] [-s <session>] [-w <window>] [-d] [-r] [--allow-blocked] [--json]
 ```
 
 **Flags:**
@@ -1383,6 +1441,7 @@ tuios paste-buffer [-b <name>] [-s <session>] [-w <window>] [-d] [-r] [--json]
 - `-s, --session`, `-w, --window`: The pane `paste-buffer` pastes into (default: the focused pane)
 - `-d, --delete`: `paste-buffer` deletes the buffer after the paste, unless it was set again meanwhile
 - `-r, --raw`: `paste-buffer` keeps each line feed. Without it, each line feed becomes a carriage return, as in tmux
+- `--allow-blocked`: From a pane, `paste-buffer` pastes into a pane that waits on a prompt
 - `--json`: Output the result as JSON
 
 A buffer can hold any bytes, a binary file included. `show-buffer` prints the
@@ -1432,7 +1491,7 @@ command that has flags of its own, or tuios reads them as its own flags:
 `tuios new-window log -- git log --oneline -20`.
 
 **Flags:**
-- `-s, --session <name>`: Target session (default: most recently active)
+- `-s, --session <name>`: Target session (default: this pane's session, else the most recently active)
 - `--workspace <n>`: Workspace to open the window on (default: the current one)
 - `--cwd <dir>`: Directory to start the shell in (default: the daemon's)
 - `--no-focus`: Leave the focus where it is
@@ -1506,7 +1565,7 @@ tuios popup [flags] -- <command> [args...]
 ```
 
 **Flags:**
-- `-s, --session <name>`: Target session (default: most recently active)
+- `-s, --session <name>`: Target session (default: this pane's session, else the most recently active)
 - `--width <size>`: Width in cells (`60`) or percent (`60%`). Default `80%`
 - `--height <size>`: Height in cells (`20`) or percent (`50%`). Default `60%`
 - `--dim <percent>`: Dim the screen behind this popup by `0` to `90` percent. Omit to inherit `appearance.popup_dim` (default `0`); explicit `--dim 0` turns it off
@@ -1685,6 +1744,38 @@ tuios close-window build
 tuios close-window -s work 86e5e19f
 ```
 
+### `tuios clear-history`
+
+Clear the scrollback of a pane, as tmux `clear-history` does. The screen
+stays. With `--screen`, tuios also removes the rows above the prompt, as
+`cmd+k` does in Ghostty and iTerm2. The prompt row then moves to the top of
+the pane.
+
+The daemon clears the pane for every client of the session. An attach later
+does not bring the old rows back. tuios clears nothing while a full-screen
+program, such as an editor, uses the pane. The `clear_scrollback` key does the
+same as `--screen`. See [KEYBINDINGS.md](KEYBINDINGS.md#clear-the-scrollback).
+
+**Usage:**
+```bash
+tuios clear-history [flags]
+```
+
+**Flags:**
+- `-s, --session <name>`: Target session (default: the session of this pane, else the most recently active)
+- `-w, --window <window>`: Target window by name or ID (default: the focused pane)
+- `--screen`: Also remove the rows above the prompt
+- `--json`: Output the result as JSON
+
+**Examples:**
+```bash
+# Clear the scrollback of the focused pane
+tuios clear-history
+
+# Clear the scrollback and the screen of the pane named build
+tuios clear-history -w build --screen
+```
+
 ### `tuios close-workspace`
 
 Close every pane on a workspace, like tmux `kill-window`. Without a number,
@@ -1700,7 +1791,9 @@ tuios close-workspace [flags] [workspace]
 - `--json`: Output the result as JSON
 
 Scratch panes stay open. To close a scratch group, name its scratch workspace.
-A pane that runs this command needs the `admin` grant. The
+When the workspace goes, the workspaces above it move down one. See
+[CONFIGURATION.md](CONFIGURATION.md#workspace-numbers). A pane that runs this
+command needs the `admin` grant. The
 `close_workspace` action does the same from the keyboard, and the `Close` row of
 a workspace tab's right-click menu in the dock does it for that tab's workspace.
 See [KEYBINDINGS.md](KEYBINDINGS.md#close-every-pane-on-a-workspace).
@@ -1742,7 +1835,7 @@ while (two minutes for many agent harnesses) keeps `--timeout` below that, or
 asks with `--no-wait` and waits with `tuios wait-for agent-message`.
 
 **Flags:**
-- `-s, --session <name>`: Target session (default: most recently active)
+- `-s, --session <name>`: Target session (default: this pane's session, else the most recently active)
 - `-w, --window <id-or-name>`: The pane asking, where a late answer is mailed (default: your own pane; none from outside every pane)
 - `-o, --option <answer>`: An answer the person can pick; give 1 to 9, each one line of at most 60 bytes
 - `--timeout <ms>`: Milliseconds to wait for the answer (default: 120000, at most one hour)
@@ -1750,7 +1843,15 @@ asks with `--no-wait` and waits with `tuios wait-for agent-message`.
 - `--request-id <id>`: Come back for a question already asked
 - `--json`: Output the result as JSON: `request_id`, `status`, `answer`, `answer_index`, `answered_by`, `verified_human`
 
-The question is one line of printable text, at most 160 bytes.
+The question is one line of printable text, at most 160 bytes. For a longer
+question, send the details to the person with `tuios send-agent-message -w human`,
+then ask a short question.
+
+While a call from inside a pane waits, that pane shows `needs_input` with the
+question as its note. When the call returns, the pane shows its earlier state
+again, or the state the pane reported while the call waited. A pane already on
+`needs_input` keeps its own prompt. A question from outside every pane changes
+no pane's state.
 
 **Exit status:** `0` with the answer alone on stdout; `2` when there is no
 answer yet; `1` when the question ended without one (dismissed, superseded by
@@ -1778,7 +1879,7 @@ tuios run-command <command> [args...] [flags]
 ```
 
 **Flags:**
-- `-s, --session <name>`: Target session (default: most recently active)
+- `-s, --session <name>`: Target session (default: this pane's session, else the most recently active)
 - `--json`: Output result as JSON (useful for scripting)
 - `--list`: List all available commands
 
@@ -1861,7 +1962,7 @@ tuios set-config <path> <value> [flags]
 ```
 
 **Flags:**
-- `-s, --session <name>`: Target session (default: most recently active)
+- `-s, --session <name>`: Target session (default: this pane's session, else the most recently active)
 - `--json`: Output the result as JSON: `key`, `value`, `applied`, and `reason` when `applied` is false
 
 With a client attached, the client applies the value and writes it to
@@ -1976,9 +2077,10 @@ tuios wait-for <condition> [flags]
 | `command-finished` | A shell that marks its commands with OSC 133 finished one. With `--window`, that pane's next command, or with `--command-seq N` the first once the pane has finished more than N (already true if it happened before the wait). Without a window, any pane in the session. Prints the exit code |
 
 **Flags:**
-- `-s, --session <name>`: Target session (default: most recently active)
+- `-s, --session <name>`: Target session (default: this pane's session, else the most recently active)
 - `-w, --window <id-or-name>`: Target window (default: focused; `agent-state`: any window)
 - `--pattern <regexp>`: Go regular expression (RE2), required by `window-output`
+- `--new`: For `window-output`: match only output written after the wait starts. Text already on the screen or in the scrollback does not match. A program that redraws its screen writes its text again, and that text matches
 - `--until <states>`: Agent state(s) to wait for, comma-separated, required by `agent-state`
 - `--thread <id>`: Only match a message in this thread, for `agent-message`. Pass any message id in it
 - `--idle <ms>`: Milliseconds of silence that count as idle (default: 500)
@@ -2000,10 +2102,19 @@ run matches the same way. Assemble the marker so the literal appears only in the
 output (`printf "BUILD_%s\n" OK`), or use `window-exit` in a window opened for
 the one command.
 
+`--new` removes the old output from the match. The wait then reads only the
+output the pane writes after the daemon starts the wait. Output written before
+that point does not count, so a command that finishes before the wait starts does not
+match. A daemon older than this flag refuses it, and the command tells you to
+run `tuios restart-server`.
+
 **Examples:**
 ```bash
 # Wait for a build to print its marker
 tuios wait-for window-output -w build --pattern 'BUILD OK'
+
+# Ignore the marker of the last build that is still on the screen
+tuios wait-for window-output -w build --pattern 'BUILD OK' --new
 
 # Wait for a pane to go quiet for two seconds
 tuios wait-for window-idle -w build --idle 2000
@@ -2056,7 +2167,7 @@ The words after `--` are joined with spaces into one line that the shell
 parses, so quote for the shell as you would when typing it.
 
 **Flags:**
-- `-s, --session <name>`: Target session (default: most recently active)
+- `-s, --session <name>`: Target session (default: this pane's session, else the most recently active)
 - `-w, --window <id-or-name>`: Target window (default: focused)
 - `--timeout <ms>`: Milliseconds to wait for the command (default: 30000). A timeout does not stop the command
 - `--lines <N>`: Keep only the last N lines of the output (0 keeps all)
@@ -2226,7 +2337,7 @@ tuios peek-prompt -w <window> [flags]
 ```
 
 **Flags:**
-- `-s, --session <name>`: Target session (default: most recently active)
+- `-s, --session <name>`: Target session (default: this pane's session, else the most recently active)
 - `-w, --window <target>`: The blocked pane, by name or ID, or `HOST:SESSION:WINDOW`
 - `--json`: Output the verb result as JSON
 
@@ -2263,7 +2374,7 @@ tuios respond <action> [value] -w <window> [flags]
 ```
 
 **Flags:**
-- `-s, --session <name>`: Target session (default: most recently active)
+- `-s, --session <name>`: Target session (default: this pane's session, else the most recently active)
 - `-w, --window <target>`: The blocked pane, by name or ID, or `HOST:SESSION:WINDOW`
 - `--prompt-id <id>`: The prompt id `peek-prompt` printed; a prompt that changed since is refused
 - `--timeout <ms>`: How long to wait for the pane to move on (default 5000, at most 30000)
@@ -2309,7 +2420,7 @@ tuios queue rm ID | --all -w <window> [flags]
 ```
 
 **Flags:**
-- `-s, --session <name>`: Target session (default: most recently active)
+- `-s, --session <name>`: Target session (default: this pane's session, else the most recently active)
 - `-w, --window <target>`: The agent's pane, by name or ID, or `HOST:SESSION:WINDOW` (default: the focused pane; for `ls`, every pane of the session)
 - `--all` (`rm`): Drop every message queued for the pane that you may drop
 - `--json`: Output the verb result as JSON
@@ -2335,14 +2446,78 @@ tuios queue rm q3
 tuios queue rm --all -w build
 ```
 
+### `tuios task`
+
+Hand out a session's work as task cards. A card is one unit of work: a title,
+the prompt for the pane that takes it, a stage, and the pane that holds it. The
+daemon keeps the cards with the session, so they outlive the pane that added
+them. After a daemon restart they come back with every holder let go. A card is
+also let go when its pane closes or its agent leaves the pane. See
+[Task verbs](protocol.md#task-verbs).
+
+The stages are `todo`, `plan`, `doing`, `verify`, `review`, `shipped` and
+`done`. `claim` moves a card in `todo` or `plan` to `doing`, and `done` moves
+it to `done` and lets it go.
+
+**Usage:**
+```bash
+tuios task add [-p PROMPT] [--stage STAGE] TITLE... [flags]
+tuios task ls [--stage STAGE] [--open] [flags]
+tuios task get ID [flags]
+tuios task claim ID | --next [-w <window>] [flags]
+tuios task done ID [flags]
+tuios task stage ID STAGE [flags]
+tuios task block ID REASON... | --clear [flags]
+tuios task release ID [flags]
+tuios task rm ID [flags]
+```
+
+**Flags:**
+- `-s, --session <name>`: Session of the cards (default: this pane's session, else the most recently active)
+- `-p, --prompt <text>` (`add`): What the pane that takes the card is to do, at most 16 KiB; `-` reads it from standard input
+- `--stage <stage>` (`add`, `ls`): The stage it starts in; for `ls`, only the cards in it
+- `--open` (`ls`): Leave out the cards that are done
+- `--next` (`claim`): Take the oldest card no pane holds that is not blocked or done
+- `-w, --window <target>` (`claim`): The pane that takes the card (default: this pane; required outside a pane)
+- `--clear` (`block`): Lift the block
+- `--json`: Output the verb result as JSON
+
+The words of `TITLE` and `REASON` are joined with spaces. `ls` prints one line
+per card: its id, stage (with `!` when it is blocked), the pane that holds it,
+its age, and its title. `claim` prints the card's id and title on its first
+line, so a script can read the id with `cut -d' ' -f1`; with nothing to take it
+fails with `no_task`, and a card another pane holds fails with `task_held`.
+
+From inside a pane, changing a card needs the `task` grant. A pane claims
+only for itself and finishes, stages, blocks or releases only the card it
+holds, unless it holds `admin`. `rm` from a pane needs `admin`.
+
+**Examples:**
+```bash
+# A conductor adds the work
+tuios task add -p 'Read api/retry.go and add a jitter option, with a test.' make the backoff jitter configurable
+
+# A worker pane takes the next card, and finishes it
+tuios task claim --next
+tuios task done t1
+
+# Stuck on something, then free again
+tuios task block t1 waiting on the staging key
+tuios task block t1 --clear
+
+# What is open
+tuios task ls --open
+```
+
 ### `tuios review`
 
 Show what the agent in a pane changed, leave notes on its lines, and send the
 notes to the agent. The diff is the pane's worktree against the base it was
 made from, or for a plain repository against the merge base with its upstream
 branch, else only what is not committed. Committed and uncommitted work show
-together, untracked files included and ignored files left out. It is read by
-the daemon through a temporary git index, so the repository, its index and its
+together, untracked files included and ignored files left out. An untracked
+file larger than `[agents.checkpoints] max_untracked_mb` (50 by default) is
+listed as not read, with no counts. It is read by the daemon through a temporary git index, so the repository, its index and its
 files are not changed. See
 [Reviewing an agent's changes](AGENT_STATE.md#reviewing-an-agents-changes).
 
@@ -2489,7 +2664,8 @@ git runs in the daemon with your own environment: your name, email, signing
 setup and hooks. tuios sets no identity and adds no trailer. `ship commit`
 stages every change, untracked files included and ignored files not. When a
 hook or the signing program refuses the commit, the index goes back to what
-it was.
+it was. A call from inside a pane runs git with no hooks, and with no program
+that only the repository's own config names.
 
 `ship merge` merges into the main checkout. That checkout must have the
 target branch checked out and no uncommitted change to a tracked file. When
@@ -2635,7 +2811,7 @@ left, so a feed may write on every tick. The keys `now`, `prompt` and
 refused here; see [`tuios agent-log`](#tuios-agent-log).
 
 **Flags:**
-- `-s, --session <name>`: Target session (default: most recently active)
+- `-s, --session <name>`: Target session (default: this pane's session, else the most recently active)
 - `-w, --window <id-or-name>`: Target window (default: focused)
 - `--source <name>`: Who is writing, so `--clear` removes only this writer's keys
 - `--ttl <duration>`: Drop the keys this call sets after this long, at most `24h` (default: keep until removed)
@@ -2681,7 +2857,7 @@ tuios agent-log [flags]
 ```
 
 **Flags:**
-- `-s, --session <name>`: Target session (default: most recently active)
+- `-s, --session <name>`: Target session (default: this pane's session, else the most recently active)
 - `-w, --window <id-or-name>`: Target window (default: focused)
 - `--since <duration>`: Only what happened in this long, such as `30m` (default: everything kept)
 - `--limit <n>`: At most this many entries, the newest, 1 to 256 (default: 64)
@@ -2746,7 +2922,7 @@ bytes.
 
 **Flags:**
 - `--harness <id>`: Id of the harness the conversation belongs to (required)
-- `-s, --session <name>`: Target session (default: most recently active)
+- `-s, --session <name>`: Target session (default: this pane's session, else the most recently active)
 - `-w, --window <id-or-name>`: Target window (default: focused)
 
 **Example:**
@@ -2777,7 +2953,7 @@ It works on any pane with a recorded conversation, including one whose agent
 had exited before the restart, which the restore itself does not offer.
 
 **Flags:**
-- `-s, --session <name>`: Target session (default: most recently active)
+- `-s, --session <name>`: Target session (default: this pane's session, else the most recently active)
 - `-w, --window <id-or-name>`: Target window (default: focused)
 - `--dry-run`: Print the command without typing it
 - `--json`: Output result as JSON
@@ -2856,7 +3032,7 @@ tuios set-session-name [name] [flags]
 ```
 
 **Flags:**
-- `-s, --session <name>`: Target session (default: most recently active)
+- `-s, --session <name>`: Target session (default: this pane's session, else the most recently active)
 
 **Examples:**
 ```bash
@@ -2881,7 +3057,7 @@ tuios set-session-accent [accent] [flags]
 ```
 
 **Flags:**
-- `-s, --session <name>`: Target session (default: most recently active)
+- `-s, --session <name>`: Target session (default: this pane's session, else the most recently active)
 
 **Examples:**
 ```bash
@@ -2907,7 +3083,7 @@ tuios set-session-space [space] [flags]
 ```
 
 **Flags:**
-- `-s, --session <name>`: Target session (default: most recently active)
+- `-s, --session <name>`: Target session (default: this pane's session, else the most recently active)
 
 **Examples:**
 ```bash
@@ -2937,7 +3113,7 @@ tuios set-workspace-name <workspace> [name] [flags]
 - `name`: Label for the workspace. Omit to clear it.
 
 **Flags:**
-- `-s, --session <name>`: Target session (default: most recently active)
+- `-s, --session <name>`: Target session (default: this pane's session, else the most recently active)
 
 **Examples:**
 ```bash
@@ -2996,7 +3172,7 @@ tuios list-hooks [flags]
 ```
 
 **Flags:**
-- `-s, --session <name>`: Target session (default: most recently active)
+- `-s, --session <name>`: Target session (default: this pane's session, else the most recently active)
 - `--event <name>`: Only the hooks on this event
 - `--json`: Output as JSON (default is human-readable table)
 
@@ -3059,7 +3235,7 @@ tuios list-dock-components [flags]
 ```
 
 **Flags:**
-- `-s, --session <name>`: Target session (default: most recently active)
+- `-s, --session <name>`: Target session (default: this pane's session, else the most recently active)
 - `--json`: Output as JSON (default is human-readable table)
 
 **Example output:**
@@ -3128,7 +3304,7 @@ a component that failed five times in a row starts working again once its script
 is fixed, without restarting the session.
 
 **Flags:**
-- `-s, --session <name>`: Target session (default: most recently active)
+- `-s, --session <name>`: Target session (default: this pane's session, else the most recently active)
 - `--json`: Output as JSON
 
 **Examples:**
@@ -3161,7 +3337,7 @@ pane again to unpin it. The view belongs to the attached client, so the command
 needs one. Set the size and the corner in `[pip]`.
 
 **Flags:**
-- `-s, --session <name>`: Target session (default: most recently active)
+- `-s, --session <name>`: Target session (default: this pane's session, else the most recently active)
 - `--off`: Unpin whatever is pinned
 - `--json`: Output as JSON
 
@@ -3259,7 +3435,7 @@ Exit status:
 - 1 for an error, such as a pane or session that does not exist
 
 **Flags:**
-- `-s, --session <name>`: Target session (default: most recently active)
+- `-s, --session <name>`: Target session (default: this pane's session, else the most recently active)
 - `-w, --window <window>`: The pane to show, by ID or name
 - `--size follow|pane`: Whether the pane takes this terminal's size (default: follow)
 
@@ -3282,7 +3458,7 @@ tuios list-windows [flags]
 ```
 
 **Flags:**
-- `-s, --session <name>`: Target session (default: most recently active)
+- `-s, --session <name>`: Target session (default: this pane's session, else the most recently active)
 - `--json`: Output as JSON (default is human-readable table)
 - `--all`: List the panes of every session on this machine, one row each
 - `--all-hosts`: Also list the panes of every session on each host in `[hosts]`
@@ -3398,7 +3574,7 @@ tuios get-window [id-or-name] [flags]
 - `id-or-name`: Window ID or custom name. If omitted, returns the focused window.
 
 **Flags:**
-- `-s, --session <name>`: Target session (default: most recently active).
+- `-s, --session <name>`: Target session (default: this pane's session, else the most recently active).
   `host:session` reads a session on another machine.
 - `--json`: Output as JSON (default is human-readable)
 
@@ -3485,7 +3661,7 @@ tuios session-info [flags]
 ```
 
 **Flags:**
-- `-s, --session <name>`: Target session (default: most recently active)
+- `-s, --session <name>`: Target session (default: this pane's session, else the most recently active)
 - `--json`: Output as JSON (default is human-readable)
 
 **Examples:**
@@ -3555,7 +3731,7 @@ and `host focus` only while a client is attached.
 | `current_workspace` | Active workspace number |
 | `num_workspaces` | Number of workspaces the session has |
 | `workspace_names` | Named workspaces, keyed by number. A workspace with no name is left out |
-| `workspace_order` | The workspace order when it was rearranged, `null` for the plain ascending order |
+| `workspace_order` | Always `null`. A workspace's number is its position, so moving one renumbers it. Kept for scripts that read it |
 | `window_count` | Number of windows across all workspaces |
 | `tiling_mode` | `tiling` or `floating` |
 | `layout_mode` | The tiling layout in use: `bsp`, `master-stack` or `scrolling`, or `unknown` before a client has reported one |
@@ -3580,10 +3756,11 @@ tuios capture-pane [flags]
 ```
 
 **Flags:**
-- `-s, --session <name>`: Target session (default: most recently active)
+- `-s, --session <name>`: Target session (default: this pane's session, else the most recently active)
 - `-w, --window <id-or-name>`: Target window (default: focused)
-- `-S, --scrollback`: Include the full scrollback history
-- `--lines <N>`: Keep only the last N lines (0 keeps all)
+- `-S, --scrollback`: Include the scrollback history. Without `--lines`, the capture keeps the last 3 commands in at most 2000 lines
+- `--commands <N>`: Keep the last N commands of the scrollback in at most 2000 lines. It needs the shell's OSC 133 marks. Takes no `--lines`, `--last-command` or `--unwrap`
+- `--lines <N>`: Keep only the last N lines. `0` keeps all
 - `--ansi`: Preserve ANSI escape codes (colors, styles)
 - `--resolved`: Rewrite ANSI index colours (31, 91, 38;5;n, ...) to 24-bit
   RGB, so a capture matches what a themed client paints. Indices below 16 come
@@ -3612,13 +3789,39 @@ is for consumers that render the capture verbatim, and implies `--ansi`.
 the cursor do not count. This is how you read the tail of a long scrollback
 without pulling all of it.
 
+A history holds 10,000 lines or more, which is too much for an agent to read.
+So `--scrollback` without `--lines` keeps the last 3 commands. It finds them
+by the shell's OSC 133 marks. Each command runs from its prompt to the next
+prompt. The capture keeps at most 2000 lines. A command whose output is too
+long keeps its command line, the start of its output and its end. One line
+replaces the middle, for example `… 48,213 lines omitted …`. `--commands N`
+keeps the last N commands under the same limit.
+
+A shell that sends no marks gives the last 2000 lines. So does `--unwrap`,
+because joined lines do not match the marks. `tuios doctor shell` prints the
+lines that turn the marks on.
+
+When the capture leaves something out, a note on stderr says what. With
+`--json`, `lines_omitted` gives the count, `command_marks` says whether the
+marks cut the capture, and `commands` gives each command's kept and omitted
+lines. Use `--lines 0` to get the whole history. The `capture-pane` verb
+itself has no cap, so the tmux shim and the MCP server get the whole history
+as before. A daemon older than `--commands` refuses it, and the command tells
+you to run `tuios restart-server`.
+
 **Examples:**
 ```bash
 # Capture the focused window's visible screen
 tuios capture-pane
 
-# Capture a specific window with its scrollback
+# Capture the last 3 commands of a window
 tuios capture-pane -w build --scrollback
+
+# Capture the last 10 commands
+tuios capture-pane -w build --commands 10
+
+# Capture the whole scrollback
+tuios capture-pane -w build --scrollback --lines 0
 
 # Read the last 40 lines a build printed
 tuios capture-pane -w build --scrollback --lines 40
@@ -3648,7 +3851,7 @@ tuios screenshot [flags]
 ```
 
 **Flags:**
-- `-s, --session <name>`: Target session (default: most recently active)
+- `-s, --session <name>`: Target session (default: this pane's session, else the most recently active)
 - `-w, --window <id-or-name>`: Target window (default: focused)
 - `-f, --format <fmt>`: `png` (default), `svg`, `ansi`, `html` or `txt`
 - `--frame <style>`: `window` (default), `plain` or `none`
@@ -3775,9 +3978,9 @@ Some commands also answer to a short name: `attach` to `a`, `new` to `n`,
 | `tuios set-agent-meta [key=value ...]` | Record display metadata about a pane's agent (model, context, a summary) for the rail |
 | `tuios set-agent-session <id> --harness <h>` | Record which conversation a pane's agent runs, for a later resume, without changing its state |
 | `tuios resume-agent [-w pane] [--dry-run]` | Type the pane's recorded conversation's resume command into its shell, after a daemon restart |
-| `tuios send-agent-message <text>` | Leave a message in another agent's inbox, or post a notice to the session. `--from human` from inside a pane is refused with `forbidden`: only the person at an attached client can send as `human` (see [Who can act as the person](AGENT_STATE.md#who-can-act-as-the-person)). With `-s HOST:SESSION` and that host's link down, the message waits on this machine and goes when the link is back; the Inbox shows it under Waiting to send. `--select` sends one message to every agent pane a selector matches, after listing them: it asks at a terminal, and takes `--yes` or `--confirm TOKEN` otherwise. `--subject` gives it a one-line subject (at most 120 characters), `--reply-to ID` joins that message's thread, and `--attach PATH` (absolute, repeatable, at most 8) attaches files |
+| `tuios send-agent-message <text>` | Leave a message in another agent's inbox, or post a notice to the session. `--from` names the sender, and defaults to the pane the command runs in. `--from human` from inside a pane is refused with `forbidden`: only the person at an attached client can send as `human` (see [Who can act as the person](AGENT_STATE.md#who-can-act-as-the-person)). With `-s HOST:SESSION` and that host's link down, the message waits on this machine and goes when the link is back; the Inbox shows it under Waiting to send. `--select` sends one message to every agent pane a selector matches, after listing them: it asks at a terminal, and takes `--yes` or `--confirm TOKEN` otherwise. `--subject` gives it a one-line subject (at most 120 characters), `--reply-to ID` joins that message's thread, and `--attach PATH` (absolute, repeatable, at most 8) attaches files |
 | `tuios read-agent-messages` | Read the messages agents have left in this session. Each body prints inside the untrusted fence, and every body line starts with `│ `, as in `ask-agent` replies and `peek-prompt`. Reading `-w human` from inside a pane is always a peek. `--unread` shows only unread messages, `--peek` reads without marking anything read, except that a peek by a pane of its own inbox (`-w "$TUIOS_PANE_ID"`) marks its unread messages seen, so the sender can tell they were looked at. A peek of another pane's inbox marks nothing, `--notices` includes the session-wide notices |
-| `tuios ask-agent <text>` | Ask another agent a question and wait for its answer. Fails with `prompt_stalled` when the target shows no sign of taking the question within `--stall-timeout` (5000 ms) of Enter. `--select` asks every agent pane a selector matches, at most 16 at once, after the same confirmation as `send-agent-message --select`; a pane on `needs_input` is refused in its own row. `--settle MS` (2000) is the silence that counts as finished for a pane that reports no state; `--allow-blocked` types at a target on `needs_input`, answering its prompt |
+| `tuios ask-agent <text>` | Ask another agent a question and wait for its answer. `--from` names the asking pane, and defaults to the pane the command runs in. Fails with `prompt_stalled` when the target shows no sign of taking the question within `--stall-timeout` (5000 ms) of Enter. `--select` asks every agent pane a selector matches, at most 16 at once, after the same confirmation as `send-agent-message --select`; a pane on `needs_input` is refused in its own row. `--settle MS` (2000) is the silence that counts as finished for a pane that reports no state; `--allow-blocked` types at a target on `needs_input`, answering its prompt |
 | `tuios queue <text>` | Leave a message for an agent that is typed as a prompt when it comes to rest, never over a prompt it waits on and never twice. `queue ls` lists what waits, `queue rm ID` or `queue rm --all -w PANE` drops it. See [`tuios queue`](#tuios-queue) |
 | `tuios review [SESSION]` | Show what the agent in a pane changed against its base, with the notes left on it. `review note FILE:LINE TEXT` leaves one, `review notes` lists them, `review send` sends the unsent ones to the agent as one queued message. See [`tuios review`](#tuios-review) |
 | `tuios start-agent <agent>` | Start an agent in a new pane and return once it shows it is at its prompt, optionally typing a first `--prompt`. `-s HOST:SESSION` starts it on another machine, in its checkout of the repository you are in. `--protocol acp\|codex` runs it headless as a transcript. See [above](#tuios-start-agent) |
@@ -3790,7 +3993,7 @@ Some commands also answer to a short name: `attach` to `a`, `new` to `n`,
 | `tuios mcp` | Serve tuios to an agent harness as an MCP server over stdio. By default it cannot type into a pane, and it is held to the session of the pane it runs in. Its default tools still set your own agent state and meta and send and read mail. `--write` adds the tools that type into panes. `--scope all` reaches every session. See [tuios mcp](#tuios-mcp) |
 | `tuios doctor shell` | Per pane: whether its shell marks its commands with OSC 133, which `tuios run`, `wait-for command-finished` and `capture-pane --last-command` need, and, when one does not, the lines that turn the marks on for your `$SHELL` (zsh, and bash 4.4 or newer; fish 4 sends them itself). A pane that marks its prompts and ran a command without marking it is flagged as prompt marks only, and one that has not run a command yet is said to mark its prompts (`-s`, `--json`, with `command_mark_seen` and `prompt_marks_only`) |
 | `tuios doctor agents` | Per harness: on PATH or not, integration installed and current or not, what it reports, the recognised harnesses with no integration and why, the running agent panes whose integration is missing or out of date with the command that fixes each, and the harness manifests loaded from the user manifest directory, which of them replace a bundled one, and the files there that failed to load (`--json`) |
-| `tuios agent-hook <harness> [event]` | What an installed hook runs: read the hook payload on stdin and report the pane's state, or for a session integration only its conversation id (`set-agent-session`). For Claude Code and Codex the prompt, tool and Stop events also carry the event as activity for [`tuios agent-log`](#tuios-agent-log), and a `Stop` reports `done` with the first line of what the agent said last. Claude Code's `SubagentStart` and `SubagentStop` report no state: they send the subagent with `report-agent-activity`, which moves the pane's `subagents` count, and a `SessionStart` sends a `session_start` there after its state report, which clears it. A report that ends a turn also sends what the pane's `agent-statusline` feed held back (`set-agent-meta`). `--explain` prints the decision to stderr. With `[agents.approvals]` naming the harness, a permission prompt (Claude Code `PermissionRequest`, including an `ExitPlanMode` plan unless `hold_plans = false`, Qwen Code `PermissionRequest`, opencode or Kilo `permission.asked`) then waits for an answer from the Inbox and prints the harness's decision, or nothing when there is none. See [Agent state](AGENT_STATE.md#harness-integrations) and [Approvals from the Inbox](AGENT_STATE.md#approvals-from-the-inbox) |
+| `tuios agent-hook <harness> [event]` | What an installed hook runs: read the hook payload on stdin and report the pane's state, or for a session integration only its conversation id (`set-agent-session`). For Claude Code and Codex the prompt, tool and Stop events also carry the event as activity for [`tuios agent-log`](#tuios-agent-log), and a `Stop` reports `done` with the first line of what the agent said last. Claude Code's `SubagentStart` and `SubagentStop` report no state: they send the subagent with `report-agent-activity`, which moves the pane's `subagents` count, and a `SessionStart` sends a `session_start` there after its state report, which clears it. A report that ends a turn also sends what the pane's `agent-statusline` feed held back (`set-agent-meta`). For Claude Code and Codex, `SessionStart`, `UserPromptSubmit` and `PostToolUse` also add one line about the pane's unread mail to the agent's context, once per message: the count, the senders and the `read-agent-messages` command. It never holds a subject or a body. `--explain` prints the decision to stderr. With `[agents.approvals]` naming the harness, a permission prompt (Claude Code `PermissionRequest`, including an `ExitPlanMode` plan unless `hold_plans = false`, Qwen Code `PermissionRequest`, opencode or Kilo `permission.asked`) then waits for an answer from the Inbox and prints the harness's decision, or nothing when there is none. See [Agent state](AGENT_STATE.md#harness-integrations) and [Approvals from the Inbox](AGENT_STATE.md#approvals-from-the-inbox) |
 | `tuios agent-statusline <harness>` | What the Claude Code status line `integration install --statusline` writes runs, and what the opencode and Kilo plugins run for the model and cost: write the model, context use and cost on stdin to the pane's agent metadata. `--then CMD` chains to your own status line. See [above](#tuios-agent-statusline) |
 | `tuios tmux-shim [-- command]` | Run a command (your shell when none is given) with a `tmux` on PATH that answers in this tuios session, so a tool that drives tmux, such as Claude Code agent teams (`tuios tmux-shim -- env CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1 claude`), opens its panes here. Off until you run it. `--log FILE` moves the log of calls the shim could not answer from `$XDG_STATE_HOME/tuios/tmux-shim.log`; `--log-all` records every call. Not on Windows. See [The tmux shim](TMUX_SHIM.md) |
 | `tuios tmux <tmux arguments>` | The shim asked for by name: answer one tmux command line (`tuios tmux display-message -p '#{pane_id}'`). In a pane, it answers in the caller's session. Outside a pane, every tuios session is a tmux session. A tmux session is a tuios session, a window `@N` is workspace N, a pane `%N` is a tuios window. See [The tmux shim](TMUX_SHIM.md#commands) for the commands it answers |
@@ -3806,6 +4009,8 @@ Some commands also answer to a short name: `attach` to `a`, `new` to `n`,
 | Command | What it does |
 |---------|--------------|
 | `tuios plugins install SOURCE [--ref REF] [--subdir DIR] [--yes] [--no-enable] [--no-build] [--replace] [--grant admin]` | Get a plugin with git, build it, pin its commit in `plugins.lock` and enable it. `SOURCE` is `owner/repo[/dir][@ref]` on github.com, a git URL (`https://`, `ssh://`, `git@host:path`, `file://`) with an optional `@ref`, or a local folder. tuios shows the plan and asks first. A native plugin that asks for `admin` needs `--grant admin`. Each install builds into a new folder. A failed build changes nothing that runs. Needs `git`. Refused inside a pane |
+| `tuios plugins uninstall ID` | Undo `tuios plugins install`. Disable the plugin, stop its processes and close its panes. Remove it from `plugins.lock`, remove its folder in `$XDG_DATA_HOME/tuios/plugins/` and remove its approval. `ID` can also be the source you installed from. The config and state folders of the plugin stay. Refused for a plugin that `install` did not install: use `unlink` for a linked folder. Refused inside a pane |
+| `tuios plugins approve ID [--deny] [--grant admin] [--yes]` | Allow a tuios plugin to run on this machine, or deny it. tuios shows what the plugin runs and its grants, and asks first. A plugin that asks for `admin` needs `--grant admin`. When the plugin's manifest changes, it waits for a new answer. Refused inside a pane and from a plugin |
 | `tuios plugins install [--yes]` | With no `SOURCE`: install each plugin in `plugins.lock` at its pinned commit. It does not enable them. `--yes` trusts the author of `plugins.lock` |
 | `tuios plugins list [--json]` | List the herdr plugins tuios finds, with the state of each: `on`, `off` or `error`. An installed plugin shows `managed` and its source and commit. Reads the files only. It runs no plugin code |
 | `tuios plugins info ID [--json]` | Show a plugin's build and startup commands, actions, panes, event hooks and link handlers |
@@ -4493,7 +4698,8 @@ them, however it was made:
 | `fan` | Write in its fan group and start agents with `fan` and `start-agent` |
 | `respond` | Answer another pane's prompt with `respond`, without the person, and type into a pane waiting on a prompt |
 | `files` | Copy files with `tuios cp`: a copy whose ends on this machine are inside the folder of the pane, and whose ends on a host are under its home folder or are its receive folder. It sees and controls only its own copies |
-| `admin` | Everything else, as every pane could before grants, such as `run-command` and `attach`. Includes `read`, `write`, `fan` and `files`, never `respond` |
+| `task` | Add, claim, finish, stage, block and release the task cards of its own session with `tuios task`. It claims only for itself and changes only the card it holds |
+| `admin` | Everything else, as every pane could before grants, such as `run-command`, `attach` and `tuios task rm`. Includes `read`, `write`, `fan`, `files` and `task`, never `respond` |
 
 A pane without `admin` types (`send-text`, `send-keys`, `run`, `ask-agent`,
 `queue`) into another pane only when that pane holds nothing it does not,
@@ -4661,6 +4867,7 @@ tuios tml get SURFACE
 tuios tml list [-s SESSION]
 tuios tml close SURFACE [VALUE]
 tuios tml validate FILE
+tuios tml render FILE [--width N] [--height N] [--state JSON] [--tab ID] [--ansi]
 ```
 
 FILE is a TML text or TML JSON file, or `-` for standard input.
@@ -4693,8 +4900,19 @@ button's `pane('send-text', ...)` runs with the opening pane's grants, and tuios
 asks the person before a surface first types into a pane. `tml validate` prints each problem with its line, the node and the fix,
 and exits with status 1 when the document has errors. It needs no daemon.
 
+`tml render` prints the document drawn as text, as tuios draws it in a pane,
+and opens nothing. The width is the terminal's width, or 100 when standard
+output is not a terminal. Without `--height` the document gets the rows it
+takes. `--state` replaces the state, `--tab` opens a tab by its id, and `--ansi`
+keeps the colours as ANSI escape sequences. It exits with status 1 and prints
+the problems when the document is not valid. It needs no daemon.
+
+`tuios capture-pane` on a TML window prints the surface as drawn, at the
+window's size, with its state and the view of the client that last reported
+one: the open tab, the cursor rows and the scroll place.
+
 **Flags of `tml show`:**
-- `-s, --session <name>`: Target session (default: most recently active)
+- `-s, --session <name>`: Target session (default: this pane's session, else the most recently active)
 - `--popup`: Show it as a popup (the default)
 - `--pane`: Show it as a tiled pane
 - `--name <name>`: Name for the window (default: the document's title)
@@ -4740,8 +4958,13 @@ A small document:
 </tml>
 ```
 
+The person can move a surface between a popup and a pane: `ctrl+b t f`, the
+`dock` control on a popup's top border, or `float` on the pane's title bar.
+The document keeps its state. Each document a pane shows is also listed in
+the agents view, on the agent's Artifacts tab.
+
 The verbs behind these commands are `tml-open`, `tml-patch`, `tml-replace`,
-`tml-get`, `tml-list`, `tml-close` and `tml-validate`, in
+`tml-get`, `tml-list`, `tml-close`, `tml-place` and `tml-validate`, in
 [protocol.md](protocol.md). The events are `tml-event`.
 
 ### `tuios mermaid`
@@ -4750,7 +4973,7 @@ Draw the Mermaid diagrams of a file in the terminal, or save them as SVG or PNG.
 
 **Usage:**
 ```bash
-tuios mermaid FILE [--format svg|png|kitty|text] [-o FILE] [--diagram N] [--theme NAME]
+tuios mermaid FILE [--format svg|png|kitty|text] [-o FILE] [--diagram N] [--theme NAME] [--background theme|none] [--fit]
 ```
 
 FILE is a Mermaid source (`.mmd`), a Markdown file, or `-` for standard input.
@@ -4758,7 +4981,7 @@ A Markdown file gives each of its `mermaid` code blocks.
 
 | Output | When |
 |--------|------|
-| `kitty` | The terminal shows kitty graphics: kitty itself, or tuios on such a terminal. The picture fits the terminal |
+| `kitty` | The terminal shows kitty graphics: kitty itself, or tuios on such a terminal. The picture fits the terminal width |
 | `text` | Any other terminal. Box-drawing characters draw the diagram, and the labels are text |
 | `svg` | The output is not a terminal |
 
@@ -4768,6 +4991,20 @@ charts, user journeys, kanban boards, git graphs, sankey diagrams, block
 diagrams, architecture diagrams and requirement diagrams. Another type is
 written as its source, with a note on stderr. A drawing wider than the terminal
 is written at its full width, with a note on stderr.
+
+The text of a `kitty` picture has the size of the terminal's text, so the
+diagrams of a file have one text size. A small diagram is not made larger. A
+diagram wider than the terminal is made smaller to fit the width. A diagram
+taller than the terminal keeps its size and goes up into the scrollback: scroll
+up to see its top. `--fit` also makes it smaller to fit the height, two rows
+shorter than the terminal at most. The picture takes a fixed box of cells, so
+the next diagram starts under it. A blank line goes between two diagrams.
+
+A `kitty` or `png` picture has the background colour of the theme.
+`--background none`, or `background = "none"` in `[mermaid]`, leaves the
+background clear, so the diagram is on the background of your terminal. The
+labels keep their contrast against the theme's background colour, so use a
+theme that matches your terminal. An SVG has no background.
 
 `-o FILE` saves to a file, as SVG or PNG from its extension. With more than one
 diagram, the files get `-2`, `-3` and so on. `--scale` sets the pixels per SVG
@@ -5434,7 +5671,8 @@ the input path reads directly. The command says so instead of reporting success.
 You can do both from inside tuios as well. Open the keybind manager with the
 leader key then `k`, or from the command palette, and press `ctrl+d` on a
 binding to remove it or `ctrl+x` to take its key off every action. Typing `#`
-in the command palette searches actions rather than commands.
+in the command palette searches actions rather than commands: `Enter` runs the
+action and `ctrl+e` opens the keybind manager on it.
 
 ---
 

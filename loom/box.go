@@ -94,6 +94,10 @@ type box struct {
 	// The measures of the current layout pass, by width.
 	mgen   uint64
 	mcache [][3]int
+	// pgen is the layout pass that last placed the box, and pw the width
+	// the layout gave it before its parent's edges cut it.
+	pgen uint64
+	pw   int
 }
 
 // inner returns the box's rectangle inside its padding.
@@ -164,7 +168,7 @@ type widget interface {
 // parsePad reads one, two or four cell counts.
 func parsePad(s string) [4]int {
 	var n []int
-	for _, f := range strings.Fields(s) {
+	for f := range strings.FieldsSeq(s) {
 		v, err := strconv.Atoi(f)
 		if err != nil || v < 0 {
 			v = 0

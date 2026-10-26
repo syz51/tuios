@@ -1,4 +1,4 @@
-// Ported from pele src/diagrams/mindmap/render.ts at 8fad23bd51783e4df1204e177a7fb0d2a30dcd13.
+// Ported from pele src/diagrams/mindmap/render.ts at 4eff76f98c73b6817800a05773517f35832e4e92.
 //
 // pele's closures over the layout arrays are methods of a struct here.
 
@@ -109,7 +109,7 @@ func draw(model *MindmapDb, config types.Config, options types.RenderOptions, do
 	size := types.Or(options.FontSize, 16)
 	measurer := options.Measurer
 	if measurer == nil {
-		measurer = text.DefaultMeasurer(options.FontFamily, "")
+		measurer = text.DefaultMeasurer(options.FontFamily, options.FontFamilyMono)
 	}
 	pad := types.Or(options.Padding, 8)
 	icons := options.Icons

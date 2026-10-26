@@ -49,6 +49,15 @@ func (d *Daemon) verbScreenshot(cs *connState, params json.RawMessage) (any, *ve
 	if verr := decodeParams(params, &p); verr != nil {
 		return nil, verr
 	}
+	// out names any path on this machine, and the verb is in the list class.
+	// A linked machine gets the picture under screenshot.directory, the one
+	// place the person chose for them.
+	if p.Out != "" && cs != nil && cs.viaLink {
+		return nil, hintedVerbError(ErrVerbForbidden, "screenshot: a linked machine cannot choose where the file is written", &VerbHint{
+			Param:  "out",
+			Detail: "Nothing was written. Leave out unset, and the file goes under screenshot.directory.",
+		})
+	}
 	if p.Format != "" && !slices.Contains(config.ScreenshotFormats, p.Format) {
 		return nil, invalidParam("format", "unknown output format", config.ScreenshotFormats...)
 	}
@@ -59,7 +68,7 @@ func (d *Daemon) verbScreenshot(cs *connState, params json.RawMessage) (any, *ve
 		return nil, invalidParam("theme", "no theme by that name is installed")
 	}
 
-	sess, verr := d.resolveVerbSession(p.Session)
+	sess, verr := d.resolveVerbSession(cs, p.Session)
 	if verr != nil {
 		return nil, verr
 	}
@@ -117,6 +126,7 @@ func (d *Daemon) verbScreenshot(cs *connState, params json.RawMessage) (any, *ve
 		return nil, newVerbError(ErrVerbCommandFailed, err.Error())
 	}
 
+	d.recordScreenshot(cs, path, string(settings.Format))
 	return map[string]any{
 		"type":   "screenshot",
 		"path":   path,

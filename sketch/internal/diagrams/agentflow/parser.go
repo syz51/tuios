@@ -1,13 +1,12 @@
-// Ported from pele src/diagrams/agentflow/parser.ts at 8fad23bd51783e4df1204e177a7fb0d2a30dcd13.
+// Ported from pele src/diagrams/agentflow/parser.ts at 4eff76f98c73b6817800a05773517f35832e4e92.
 
 package agentflow
 
 import (
 	"strings"
-
-	"tuios.dev/sketch/internal/js"
 	"unicode/utf8"
 
+	"tuios.dev/sketch/internal/js"
 	"tuios.dev/sketch/internal/types"
 )
 
@@ -47,7 +46,9 @@ const (
 
 // trimBraceTrail is source.replace(/}[^\S\n]*\n/g, '}\n'): Mermaid trims the whitespace between a closing
 // brace and the end of its line before parsing. The source is copied only where there is some.
-func trimBraceTrail(source string) string {
+// edits, when not nil, gets each run it trims, as replacements(source, RE_BRACE_TRAIL, 2) lists
+// them; a brace right before its line break is left out, as an edit that changes nothing.
+func trimBraceTrail(source string, edits *[]types.Edit) string {
 	var b strings.Builder
 	from := 0
 	for i := 0; i < len(source); i++ {
@@ -64,6 +65,9 @@ func trimBraceTrail(source string) string {
 		}
 		if j == i+1 || j >= len(source) || source[j] != '\n' {
 			continue
+		}
+		if edits != nil {
+			*edits = append(*edits, types.Edit{From: i, To: j + 1, Length: 2})
 		}
 		b.WriteString(source[from : i+1])
 		from = j
@@ -86,7 +90,7 @@ func strp(s string) *string { return &s }
 func parseAgentflow(source string, db *AgentflowDb) {
 	src := source
 	if strings.Contains(source, "}") {
-		src = trimBraceTrail(source)
+		src = trimBraceTrail(source, nil)
 	}
 	tk := tokenize(src)
 	typesT, texts, starts, locs := tk.types, tk.texts, tk.starts, tk.locs
@@ -104,10 +108,16 @@ func parseAgentflow(source string, db *AgentflowDb) {
 
 	fail := func(expected string) {
 		t := typesT[i]
-		if t == T_ERROR {
-			panic(types.SyntaxError("agentflow", src, starts[i], "", true))
+		at := starts[i]
+		if src != source {
+			var edits []types.Edit
+			trimBraceTrail(source, &edits)
+			at = types.InputOffset([][]types.Edit{edits}, at)
 		}
-		panic(types.SyntaxError("agentflow", src, starts[i], "Expecting "+expected+", got '"+TOKEN_NAMES[t]+"'", false))
+		if t == T_ERROR {
+			panic(types.SyntaxError("agentflow", source, at, "", true))
+		}
+		panic(types.SyntaxError("agentflow", source, at, "Expecting "+expected+", got '"+TOKEN_NAMES[t]+"'", false))
 	}
 
 	// span is the span from the start of token `a` to the end of token `b`.

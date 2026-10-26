@@ -129,6 +129,10 @@ type NotificationsConfig struct {
 	// ErrorSticky makes errors wait for esc instead of expiring (default true).
 	ErrorSticky *bool `toml:"error_sticky"`
 
+	// Bell is what a pane's BEL does: toast, forward, both or off. See
+	// BellModes.
+	Bell string `toml:"bell"`
+
 	// Agent is the [notifications.agent] table: what happens when a pane's
 	// agent state changes. See agent_alerts.go.
 	Agent AgentAlertsConfig `toml:"agent"`
@@ -330,6 +334,7 @@ var WindowSizeModes = []string{WindowSizeSmallest, WindowSizeLargest, WindowSize
 // AppearanceConfig holds appearance-related settings
 type AppearanceConfig struct {
 	BorderStyle              string                  `toml:"border_style"`                 // Border style: rounded, normal, thick, double, hidden, block, ascii, outer-half-block, inner-half-block, glyphs
+	FramePanels              bool                    `toml:"frame_panels"`                 // Frame overlay panels in the border style at every colour depth (default: false)
 	ZenMode                  string                  `toml:"zen_mode"`                     // Zen mode: disabled, always, mouse (default: disabled)
 	Links                    string                  `toml:"links"`                        // Links tuios acts on: off, marked, all (default: all)
 	LinkClick                string                  `toml:"link_click"`                   // The click that opens a link: both, ctrl, shift, off (default: both)
@@ -376,6 +381,10 @@ type AppearanceConfig struct {
 	SharedBorders            *bool                   `toml:"shared_borders"`               // Share borders between adjacent tiled windows (default: false)
 	// Customization
 	BorderFocusedColor string `toml:"border_focused_color"` // Hex color for focused pane border (e.g., "#89b4fa")
+	// BorderFocusedColorWindow and BorderFocusedColorTerminal are the focused
+	// border in one mode. Each wins over BorderFocusedColor in its mode.
+	BorderFocusedColorWindow   string `toml:"border_focused_color_window"`
+	BorderFocusedColorTerminal string `toml:"border_focused_color_terminal"`
 	// BorderFocusedGradient is two or more colours the focused border steps
 	// through, separated by spaces or commas. Empty draws one colour.
 	BorderFocusedGradient string `toml:"border_focused_gradient"`
@@ -829,6 +838,9 @@ type SidebarConfig struct {
 	// FolderClick is what a click on a folder row does: navigate, cd or both
 	// (default: navigate).
 	FolderClick string `toml:"folder_click"`
+	// FilesStyle is how the files section draws: list or tree (default:
+	// list). See SidebarFilesStyles.
+	FilesStyle string `toml:"files_style"`
 	// HeaderCase is how the rail's section headers read: lowercase or uppercase
 	// (default: lowercase). See RailHeaderCases.
 	HeaderCase string `toml:"header_case"`
@@ -853,6 +865,10 @@ type SidebarConfig struct {
 	// Background is the ground painted under the rail: off, theme or
 	// #RRGGBB, and empty follows appearance.background (default: empty).
 	Background string `toml:"background"`
+	// CursorBackground is the ground of the row under the rail's cursor
+	// while the rail has the keyboard: a colour, and empty keeps the
+	// palette's own (default: empty).
+	CursorBackground string `toml:"cursor_background"`
 	// AgentRow is the [appearance.sidebar.agent_row] table: the tokens an
 	// agent row draws and the value rules that colour them. Decoded as generic
 	// TOML and read by ParseSidebarAgentRow, so a wrong value in it is a
@@ -930,6 +946,13 @@ type KeybindingsConfig struct {
 	// "bind" when keyboard_layout is "us" or, with keyboard_layout unset, the
 	// Mac's input source is US or ABC, and "alt" otherwise.
 	OptionGlyphs string `toml:"option_glyphs,omitempty"`
+	// Lock is zellij's locked mode. When true, terminal mode gives every key
+	// to the focused pane except the leader: no terminal_mode key, no global
+	// key, no workspace chord and no hold key. The leader unlocks for one
+	// action, and tuios locks again when it is done. A repeatable action (see
+	// Repeat) keeps its menu open until esc, and that menu takes only the
+	// repeatable actions. Unset is false, or the preset's.
+	Lock *bool `toml:"lock,omitempty"`
 	// Repeat lists the actions that stay armed after the leader, as tmux's
 	// bind -r does: the same key pressed again inside
 	// appearance.prefix_repeat_time runs the action again without the leader.
@@ -953,8 +976,12 @@ type KeybindingsConfig struct {
 	// TuiosPrefix is the tuios menu, the leader then prefix_tuios's key. A
 	// preset puts the tuios features whose keys it takes here. Empty without
 	// a preset.
-	TuiosPrefix  map[string][]string `toml:"tuios_prefix,omitempty"`
-	TerminalMode map[string][]string `toml:"terminal_mode"` // Direct keybinds in terminal mode (no prefix required)
+	TuiosPrefix map[string][]string `toml:"tuios_prefix,omitempty"`
+	// Menus are prefix menus the user declares, each opened by binding the
+	// action open_menu:NAME in any section, so menus nest as deep as the
+	// config does. None ships: see menus.go.
+	Menus        map[string]MenuConfig `toml:"menus,omitempty"`
+	TerminalMode map[string][]string   `toml:"terminal_mode"` // Direct keybinds in terminal mode (no prefix required)
 	// Global binds are consulted in window mode and in terminal mode alike, so
 	// the palette and the launcher answer to one key wherever the user is. They
 	// are a section of their own rather than entries in terminal_mode because
@@ -1089,6 +1116,7 @@ func DefaultConfig() *UserConfig {
 				Width:         SidebarDefaultWidth,
 				Sections:      SidebarDefaultSections,
 				FolderClick:   SidebarFolderClickNavigate,
+				FilesStyle:    SidebarFilesList,
 				HeaderCase:    RailHeaderLowercase,
 				RowStyle:      RailRowBar,
 				HeaderStyle:   RailHeaderAuto,
@@ -1126,7 +1154,7 @@ func DefaultConfig() *UserConfig {
 		Hints:        defaultHintsConfig(),
 		Scratch:      defaultScratchConfig(),
 		PiP:          defaultPiPConfig(),
-		Mermaid:      MermaidConfig{Theme: "tuios"},
+		Mermaid:      MermaidConfig{Theme: "tuios", Background: "theme"},
 		Panes:        defaultPanesConfig(),
 		PasteBuffers: defaultPasteBuffersConfig(),
 		Keybindings: KeybindingsConfig{
@@ -1313,6 +1341,14 @@ func DefaultConfig() *UserConfig {
 				"prefix_toggle_spotlight":   {"B"},
 				"prefix_session_switcher":   {"S"},
 				"prefix_workspace_switcher": {"W"},
+				// G for go to, one shift from the g that shows the scratch
+				// terminal.
+				"goto_picker": {"G"},
+				// U makes a worktree of the focused pane's repository, herdr's
+				// leader+G. G is the go-to picker here, ctrl+g is the zellij
+				// preset's leader, and the multifocus docs suggest Y. U is
+				// free in every preset.
+				"new_worktree": {"U"},
 				// /, which searches everywhere else too. tmux puts its tree on
 				// s, which is the scrollback browser here.
 				"choose_tree":       {"/"},
@@ -1364,6 +1400,9 @@ func DefaultConfig() *UserConfig {
 				// makes a window and t is the window prefix. y is the key the
 				// multifocus docs tell people to bind, so it stays free.
 				"prefix_transfers": {"u"},
+				// E opens the scrollback in the editor, one shift from the e
+				// that focuses the rail. Copy mode has it on ctrl+g.
+				ActionEditScrollback: {"E"},
 			},
 			WindowPrefix: map[string][]string{
 				"window_prefix_new":    {"n"},
@@ -1372,6 +1411,7 @@ func DefaultConfig() *UserConfig {
 				"window_prefix_next":   {"tab"},
 				"window_prefix_prev":   {"shift+tab"},
 				"window_prefix_tiling": {"t"},
+				"window_prefix_float":  {"f"},
 				"window_prefix_cancel": {"esc"},
 			},
 			MinimizePrefix: map[string][]string{
@@ -1483,6 +1523,8 @@ func DefaultConfig() *UserConfig {
 			Lists: getDefaultListsKeybinds(),
 		},
 	}
+	// Written out so the file shows the key and its default.
+	cfg.Notifications.Bell = BellToast
 	return cfg
 }
 
@@ -1598,7 +1640,10 @@ const (
 	ActionInboxNewAgent    = "inbox_new_agent"
 	// ActionInboxCompare opens the comparison of the attempts of the fan
 	// under the cursor.
-	ActionInboxCompare    = "inbox_compare"
+	ActionInboxCompare = "inbox_compare"
+	// ActionInboxArtifact opens what the agent under the cursor has shown,
+	// such as a TML form, on its Artifacts tab, and gives it the keys.
+	ActionInboxArtifact   = "inbox_artifact"
 	ActionInboxDetailDown = "inbox_detail_down"
 	ActionInboxDetailUp   = "inbox_detail_up"
 	// The approval card's keys, the keys that open and close the focus on a
@@ -1683,6 +1728,7 @@ func getDefaultInboxKeybinds() map[string][]string {
 		ActionInboxDenyReason:  {"R"},
 		ActionInboxNewAgent:    {"n"},
 		ActionInboxCompare:     {"c"},
+		ActionInboxArtifact:    {"o"},
 		ActionInboxDetailDown:  {"J", "ctrl+d"},
 		ActionInboxDetailUp:    {"K", "ctrl+u"},
 		ActionInboxAllow:       {"a"},
@@ -1879,46 +1925,64 @@ func getDefaultWorkspaceKeybinds() map[string][]string {
 		// macOS users think in terms of Option key
 		// The KeyNormalizer expands opt+1 to [opt+1, alt+1]
 		base = map[string][]string{
-			"switch_workspace_1": {"opt+1"},
-			"switch_workspace_2": {"opt+2"},
-			"switch_workspace_3": {"opt+3"},
-			"switch_workspace_4": {"opt+4"},
-			"switch_workspace_5": {"opt+5"},
-			"switch_workspace_6": {"opt+6"},
-			"switch_workspace_7": {"opt+7"},
-			"switch_workspace_8": {"opt+8"},
-			"switch_workspace_9": {"opt+9"},
-			"move_and_follow_1":  {"opt+shift+1"},
-			"move_and_follow_2":  {"opt+shift+2"},
-			"move_and_follow_3":  {"opt+shift+3"},
-			"move_and_follow_4":  {"opt+shift+4"},
-			"move_and_follow_5":  {"opt+shift+5"},
-			"move_and_follow_6":  {"opt+shift+6"},
-			"move_and_follow_7":  {"opt+shift+7"},
-			"move_and_follow_8":  {"opt+shift+8"},
-			"move_and_follow_9":  {"opt+shift+9"},
+			"switch_workspace_1":  {"opt+1"},
+			"switch_workspace_2":  {"opt+2"},
+			"switch_workspace_3":  {"opt+3"},
+			"switch_workspace_4":  {"opt+4"},
+			"switch_workspace_5":  {"opt+5"},
+			"switch_workspace_6":  {"opt+6"},
+			"switch_workspace_7":  {"opt+7"},
+			"switch_workspace_8":  {"opt+8"},
+			"switch_workspace_9":  {"opt+9"},
+			"move_and_follow_1":   {"opt+shift+1"},
+			"move_and_follow_2":   {"opt+shift+2"},
+			"move_and_follow_3":   {"opt+shift+3"},
+			"move_and_follow_4":   {"opt+shift+4"},
+			"move_and_follow_5":   {"opt+shift+5"},
+			"move_and_follow_6":   {"opt+shift+6"},
+			"move_and_follow_7":   {"opt+shift+7"},
+			"move_and_follow_8":   {"opt+shift+8"},
+			"move_and_follow_9":   {"opt+shift+9"},
+			"send_to_workspace_1": {"ctrl+opt+1"},
+			"send_to_workspace_2": {"ctrl+opt+2"},
+			"send_to_workspace_3": {"ctrl+opt+3"},
+			"send_to_workspace_4": {"ctrl+opt+4"},
+			"send_to_workspace_5": {"ctrl+opt+5"},
+			"send_to_workspace_6": {"ctrl+opt+6"},
+			"send_to_workspace_7": {"ctrl+opt+7"},
+			"send_to_workspace_8": {"ctrl+opt+8"},
+			"send_to_workspace_9": {"ctrl+opt+9"},
 		}
 	} else {
 		// Linux and other platforms use alt
 		base = map[string][]string{
-			"switch_workspace_1": {"alt+1"},
-			"switch_workspace_2": {"alt+2"},
-			"switch_workspace_3": {"alt+3"},
-			"switch_workspace_4": {"alt+4"},
-			"switch_workspace_5": {"alt+5"},
-			"switch_workspace_6": {"alt+6"},
-			"switch_workspace_7": {"alt+7"},
-			"switch_workspace_8": {"alt+8"},
-			"switch_workspace_9": {"alt+9"},
-			"move_and_follow_1":  {"alt+shift+1"},
-			"move_and_follow_2":  {"alt+shift+2"},
-			"move_and_follow_3":  {"alt+shift+3"},
-			"move_and_follow_4":  {"alt+shift+4"},
-			"move_and_follow_5":  {"alt+shift+5"},
-			"move_and_follow_6":  {"alt+shift+6"},
-			"move_and_follow_7":  {"alt+shift+7"},
-			"move_and_follow_8":  {"alt+shift+8"},
-			"move_and_follow_9":  {"alt+shift+9"},
+			"switch_workspace_1":  {"alt+1"},
+			"switch_workspace_2":  {"alt+2"},
+			"switch_workspace_3":  {"alt+3"},
+			"switch_workspace_4":  {"alt+4"},
+			"switch_workspace_5":  {"alt+5"},
+			"switch_workspace_6":  {"alt+6"},
+			"switch_workspace_7":  {"alt+7"},
+			"switch_workspace_8":  {"alt+8"},
+			"switch_workspace_9":  {"alt+9"},
+			"move_and_follow_1":   {"alt+shift+1"},
+			"move_and_follow_2":   {"alt+shift+2"},
+			"move_and_follow_3":   {"alt+shift+3"},
+			"move_and_follow_4":   {"alt+shift+4"},
+			"move_and_follow_5":   {"alt+shift+5"},
+			"move_and_follow_6":   {"alt+shift+6"},
+			"move_and_follow_7":   {"alt+shift+7"},
+			"move_and_follow_8":   {"alt+shift+8"},
+			"move_and_follow_9":   {"alt+shift+9"},
+			"send_to_workspace_1": {"ctrl+alt+1"},
+			"send_to_workspace_2": {"ctrl+alt+2"},
+			"send_to_workspace_3": {"ctrl+alt+3"},
+			"send_to_workspace_4": {"ctrl+alt+4"},
+			"send_to_workspace_5": {"ctrl+alt+5"},
+			"send_to_workspace_6": {"ctrl+alt+6"},
+			"send_to_workspace_7": {"ctrl+alt+7"},
+			"send_to_workspace_8": {"ctrl+alt+8"},
+			"send_to_workspace_9": {"ctrl+alt+9"},
 		}
 	}
 
@@ -2402,6 +2466,7 @@ func ApplyAppearanceConfig(cfg *UserConfig, s *Settings) {
 	if cfg.Appearance.BorderStyle != "" {
 		s.BorderStyle = cfg.Appearance.BorderStyle
 	}
+	s.FramePanels = cfg.Appearance.FramePanels
 
 	// ZenMode only takes one of its three values, so a typo in the config lands
 	// on the default the validator warned it would fall back to.
@@ -2545,6 +2610,12 @@ func ApplyAppearanceConfig(cfg *UserConfig, s *Settings) {
 		s.SidebarFolderClick = sb.FolderClick
 	}
 	// A typo reads as the default, the same contract the other enum options
+	// keep, and the validator says so.
+	s.SidebarFilesStyle = SidebarFilesList
+	if slices.Contains(SidebarFilesStyles, sb.FilesStyle) {
+		s.SidebarFilesStyle = sb.FilesStyle
+	}
+	// A typo reads as the default, the same contract the other enum options
 	// keep.
 	if slices.Contains(RailHeaderCases, sb.HeaderCase) {
 		s.RailHeaderCase = sb.HeaderCase
@@ -2659,6 +2730,7 @@ func ApplyAppearanceConfig(cfg *UserConfig, s *Settings) {
 	s.WindowChromeBackground = cfg.Appearance.WindowChromeBackground
 	s.DockBackground = cfg.Appearance.DockBackground
 	s.SidebarBackground = cfg.Appearance.Sidebar.Background
+	s.SidebarCursorBackground = cfg.Appearance.Sidebar.CursorBackground
 
 	// A pointer because zero is a real value here: it turns the repeat window
 	// off, and a plain int could not tell that from an absent key.
@@ -2788,6 +2860,7 @@ func ApplyAppearanceConfig(cfg *UserConfig, s *Settings) {
 	}
 	s.KeyboardLayout = cfg.Keybindings.KeyboardLayout
 	s.OptionGlyphs = cfg.Keybindings.OptionGlyphs
+	s.Lock = cfg.Keybindings.Lock != nil && *cfg.Keybindings.Lock
 
 	// The motion level. A config that was not run through the load path (one
 	// built in code) can still carry the old boolean, so it is folded here as
@@ -2971,7 +3044,7 @@ func ApplyAppearanceConfig(cfg *UserConfig, s *Settings) {
 	// Custom border colors override the theme-derived colors. Empty strings
 	// clear any override and restore theme colors. This runs after the theme
 	// switch above, which resets the derived colors.
-	theme.SetBorderOverrides(cfg.Appearance.BorderFocusedColor, cfg.Appearance.BorderUnfocusedColor)
+	theme.SetBorderOverrides(cfg.Appearance.BorderOverrides())
 	s.BorderFocusedGradient = cfg.Appearance.BorderFocusedGradient
 	s.BorderGradientAngle = DefaultBorderGradientAngle
 	if a := cfg.Appearance.BorderGradientAngle; a != nil {
@@ -3096,6 +3169,11 @@ func ApplyNotificationConfig(cfg *UserConfig, s *Settings) {
 	// explicit false turns it off.
 	if cfg.Notifications.ErrorSticky != nil {
 		s.NotificationErrorSticky = *cfg.Notifications.ErrorSticky
+	}
+	// An unknown value keeps the default; validation already warned about it.
+	s.Bell = BellToast
+	if slices.Contains(BellModes, cfg.Notifications.Bell) {
+		s.Bell = cfg.Notifications.Bell
 	}
 }
 
@@ -3351,6 +3429,10 @@ func fillMissingKeybinds(cfg, defaultCfg *UserConfig) {
 			if cfg.Keybindings.LeaderTwice == "" {
 				cfg.Keybindings.LeaderTwice = kb.LeaderTwice
 			}
+			if cfg.Keybindings.Lock == nil && kb.Lock != nil {
+				lock := *kb.Lock
+				cfg.Keybindings.Lock = &lock
+			}
 		}
 	}
 
@@ -3452,7 +3534,13 @@ func fillMissingKeybinds(cfg, defaultCfg *UserConfig) {
 
 	// Fill in missing keys with defaults
 	fillMapDefaults(cfg.Keybindings.WindowManagement, defaultCfg.Keybindings.WindowManagement)
+	// The workspaces table is part of the window-mode keymap as well, so a new
+	// workspace default yields the same way a new layout default does.
+	workspaceYield := yieldTakenDefaults("workspaces", windowModeTables(cfg), defaultCfg.Keybindings.Workspaces)
 	fillMapDefaults(cfg.Keybindings.Workspaces, defaultCfg.Keybindings.Workspaces)
+	for _, y := range workspaceYield {
+		delete(cfg.Keybindings.Workspaces, y.Action)
+	}
 	// The layout table is one of several that make up the window-mode keymap,
 	// and it wins a key over window_management. So a new layout default yields
 	// to the user's own binding for its key in any of those tables.
@@ -3471,6 +3559,7 @@ func fillMissingKeybinds(cfg, defaultCfg *UserConfig) {
 	for _, y := range cfg.YieldedDefaults {
 		delete(cfg.Keybindings.PrefixMode, y.Action)
 	}
+	cfg.YieldedDefaults = append(cfg.YieldedDefaults, workspaceYield...)
 	cfg.YieldedDefaults = append(cfg.YieldedDefaults, layoutYield...)
 	presetYield = append(presetYield, fillPrefix("window_prefix", cfg.Keybindings.WindowPrefix, defaultCfg.Keybindings.WindowPrefix)...)
 	fillMapDefaults(cfg.Keybindings.MinimizePrefix, defaultCfg.Keybindings.MinimizePrefix)
@@ -3553,6 +3642,10 @@ var yieldingDefaults = map[string]bool{
 	"open_keybind_presets": true,
 	// / after the prefix, new in the release after v0.8.5.
 	"choose_tree": true,
+	// G after the prefix, new with the go-to picker.
+	"goto_picker": true,
+	// U after the prefix, new with the worktree key.
+	"new_worktree": true,
 	// p in window mode, new in the release after v0.8.2.
 	"toggle_pip": true,
 	// V after the prefix, new in the release after v0.8.2.
@@ -3564,6 +3657,9 @@ var yieldingDefaults = map[string]bool{
 	// between machines.
 	"prefix_transfers": true,
 	"file_send":        true,
+	// E after the prefix and ctrl+g in copy mode, new with the scrollback
+	// editor keys.
+	ActionEditScrollback: true,
 	// j and k in window mode, new in the release after v0.8.0.
 	"focus_down": true,
 	"focus_up":   true,
@@ -3582,6 +3678,17 @@ var yieldingDefaults = map[string]bool{
 	"inbox_tab_prev":     true,
 	"inbox_tab_next":     true,
 	"inbox_expand":       true,
+	// ctrl+alt+N (ctrl+opt+N on macOS), the first default for
+	// send_to_workspace_N.
+	"send_to_workspace_1": true,
+	"send_to_workspace_2": true,
+	"send_to_workspace_3": true,
+	"send_to_workspace_4": true,
+	"send_to_workspace_5": true,
+	"send_to_workspace_6": true,
+	"send_to_workspace_7": true,
+	"send_to_workspace_8": true,
+	"send_to_workspace_9": true,
 	// c, new with the fan comparison.
 	"inbox_compare": true,
 }
@@ -3845,4 +3952,15 @@ func GetConfigPath() (string, error) {
 		return xdg.ConfigFile("tuios/config.toml")
 	}
 	return path, nil
+}
+
+// BorderOverrides are the border colour keys of a, as the theme package takes
+// them.
+func (a *AppearanceConfig) BorderOverrides() theme.BorderOverrides {
+	return theme.BorderOverrides{
+		Focused:         a.BorderFocusedColor,
+		FocusedWindow:   a.BorderFocusedColorWindow,
+		FocusedTerminal: a.BorderFocusedColorTerminal,
+		Unfocused:       a.BorderUnfocusedColor,
+	}
 }

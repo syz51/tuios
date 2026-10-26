@@ -1,4 +1,4 @@
-// Ported from pele src/diagrams/agentflow/index.ts at 8fad23bd51783e4df1204e177a7fb0d2a30dcd13.
+// Ported from pele src/diagrams/agentflow/index.ts at 4eff76f98c73b6817800a05773517f35832e4e92.
 
 // Package agentflow draws agentflow diagrams: the steps, tools, decisions and documents of
 // AI agents, in flows that nest, joined by sequence, reference and failure edges.
@@ -15,7 +15,7 @@ var Agentflow = &types.Diagram{
 		flow, _ := config["flowchart"].(map[string]any)
 		inherit, _ := flow["inheritDir"].(bool)
 		direction, _ := config["direction"].(string)
-		db := NewAgentflowDb(AgentflowDbOptions{InheritDir: inherit, Direction: direction, LineOffset: lineOffset, MaxEdges: limits.MaxEdges})
+		db := NewAgentflowDb(AgentflowDbOptions{InheritDir: inherit, Direction: direction, LineOffset: lineOffset, Source: source, MaxEdges: limits.MaxEdges})
 		if title != nil && *title != "" {
 			db.Title = *title
 		}

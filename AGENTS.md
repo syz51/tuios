@@ -73,6 +73,31 @@ and run throwaway daemons under a scratch directory. Only `install`,
 `install-ghostty`, `deploy`, `deploy-hosts` and `restart` touch the live
 daemon. `just deploy` runs `tuios hosts sync --dev --local --restart --yes`.
 
+### The check gate
+
+Run `just check --changed` before you mark a pull request ready. It runs
+`scripts/check.sh` on the packages the branch changed against `origin/main`.
+`just check` runs it on every module, which is the form for main.
+
+| Check | What it runs | Fails the gate |
+|-------|--------------|----------------|
+| `fmt` | `gofmt -l`, and `goimports -l` when installed | yes |
+| `vet` | `go vet`, also with `-tags ghostty` when libghostty-vt is built | yes |
+| `lint` | `golangci-lint` with `.golangci.yml`, at the CI version | yes |
+| `tuioslint` | the `internal/lint` tests | yes |
+| `vuln` | `govulncheck`, for each module the branch touched | yes |
+| `fix` | the `go fix` modernizers, one line per finding | no, report |
+| `gopls` | `gopls check` on the changed Go files | yes |
+| `tidy` | `go mod tidy -diff` per module, `scripts/library-pins.sh check` | yes |
+| `cross` | `go build` for linux, darwin, windows and freebsd | yes |
+| `deadcode` | functions no binary or test reaches, outside `pkg/` | no, report |
+
+`--only vet,lint` runs a subset. Each check writes its full output to
+`.dev/check/NAME.log`. `gopls` fails only on the lines the branch added.
+`lint` covers the whole of each changed package. Apply a `fix` finding package by package, and read each
+diff first. `go fix -diff ./...` prints the patches. Fix a finding at the
+root. A `//nolint` needs its reason on the same line.
+
 ### Browser build (Learn tuios)
 
 `cmd/tuios-wasm` is tuios compiled to WebAssembly for the guided tour at
@@ -299,7 +324,7 @@ Tiling itself toggles on `Ctrl+B` `Space` (or bare `t` in window-management mode
 ### Go Style
 
 - Follow standard Go conventions ([Effective Go](https://go.dev/doc/effective_go))
-- Run `go fmt` before committing
+- Run `go fmt` before committing, and `just check --changed` before a pull request is marked ready
 - Package comments on all packages (see existing `internal/*/` packages)
 - Meaningful variable names (avoid single letters except loop indices)
 
@@ -362,6 +387,16 @@ The E2E suite runs a real `tuios` binary against real daemons. It is under
 ```bash
 go build -o /tmp/tuios ./cmd/tuios
 cd e2e/tui && TUIOS_E2E=1 TUIOS_E2E_BIN=/tmp/tuios go test -count=1 -timeout 40m .
+```
+
+A pull request runs only the e2e tests its change can reach. `e2e/tui/testselect`
+reads the diff and `e2e/tui/testselect/testmap.txt`, which records the functions
+each test ran in a coverage run. The e2e-tui test map workflow refreshes the map
+every week. CI files, the harness, `go.mod` beyond library pins, and any path no
+rule names run the whole suite. Main always runs the whole suite.
+
+```bash
+cd e2e/tui && TUIOS_E2E=1 go test -list '^Test' . | go run ./testselect -base origin/main
 ```
 
 A test that claims to cover a bug must fail on a build with the fix removed.

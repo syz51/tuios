@@ -142,6 +142,10 @@ type Options struct {
 	Context int
 	// Limits bound the diff; the zero value is DefaultLimits.
 	Limits Limits
+	// MaxUntracked is the size in bytes past which an untracked file is not
+	// read: it is listed as Skipped, with no counts and no hunks. Zero or
+	// less is no limit.
+	MaxUntracked int64
 }
 
 // Build reads the diff. Nothing in the repository, its index or its working
@@ -153,9 +157,10 @@ func Build(ctx context.Context, opt Options) (*Diff, error) {
 		lim = DefaultLimits
 	}
 	tree := opt.Tree
+	var skipped []string
 	var err error
 	if tree == "" {
-		tree, err = worktree.SnapshotTree(ctx, opt.Dir)
+		tree, skipped, err = worktree.SnapshotTree(ctx, opt.Dir, opt.MaxUntracked)
 		if err != nil {
 			return nil, err
 		}
@@ -163,7 +168,7 @@ func Build(ctx context.Context, opt Options) (*Diff, error) {
 	d := &Diff{TreeSHA: tree, Files: []File{}}
 	from := opt.Base.SHA
 	if opt.AgainstDir != "" {
-		from, err = worktree.SnapshotTree(ctx, opt.AgainstDir)
+		from, _, err = worktree.SnapshotTree(ctx, opt.AgainstDir, opt.MaxUntracked)
 		if err != nil {
 			return nil, fmt.Errorf("the other worktree: %w", err)
 		}
@@ -204,6 +209,11 @@ func Build(ctx context.Context, opt Options) (*Diff, error) {
 		}
 		d.Truncated = truncated
 	}
+	for _, p := range skipped {
+		if underPaths(p, opt.Paths) {
+			files = append(files, File{Path: p, Status: StatusUntracked, Skipped: true, Hunks: []Hunk{}})
+		}
+	}
 	d.Files = files
 	for _, f := range files {
 		d.Totals.Files++
@@ -211,6 +221,21 @@ func Build(ctx context.Context, opt Options) (*Diff, error) {
 		d.Totals.Removed += f.Removed
 	}
 	return d, nil
+}
+
+// underPaths reports whether path is one of paths or inside one of them, the
+// way a literal pathspec matches. No paths matches every path.
+func underPaths(path string, paths []string) bool {
+	if len(paths) == 0 {
+		return true
+	}
+	for _, p := range paths {
+		p = strings.TrimSuffix(p, "/")
+		if path == p || strings.HasPrefix(path, p+"/") {
+			return true
+		}
+	}
+	return false
 }
 
 // pathspec is the "--" and the paths, each literal.
@@ -258,9 +283,8 @@ func markUntracked(ctx context.Context, dir string, files []File, spec []string)
 func streamUnified(ctx context.Context, dir string, args []string, files []File, lim Limits) (bool, error) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	cmd := childproc.CommandContext(ctx, "git", args...)
-	cmd.Dir = dir
-	cmd.Env = gitEnv(nil)
+	cmd := childproc.Git(ctx, dir, args...)
+	cmd.Env = gitEnv(cmd.Env, nil)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	stdout, err := cmd.StdoutPipe()
@@ -406,9 +430,8 @@ func revParse(ctx context.Context, dir, rev string) (string, error) {
 
 // emptyTree is the hash of the empty tree in the repository's hash format.
 func emptyTree(ctx context.Context, dir string) (string, error) {
-	cmd := childproc.CommandContext(ctx, "git", "hash-object", "-t", "tree", "--stdin")
-	cmd.Dir = dir
-	cmd.Env = gitEnv(nil)
+	cmd := childproc.Git(ctx, dir, "hash-object", "-t", "tree", "--stdin")
+	cmd.Env = gitEnv(cmd.Env, nil)
 	cmd.Stdin = strings.NewReader("")
 	out, err := cmd.Output()
 	if err != nil {
@@ -417,17 +440,11 @@ func emptyTree(ctx context.Context, dir string) (string, error) {
 	return strings.TrimSpace(string(out)), nil
 }
 
-// gitEnv is the environment git runs with: nothing interactive, no optional
-// locks, and never the caller's index.
-func gitEnv(extra []string) []string {
-	env := make([]string, 0, len(os.Environ())+4)
-	for _, kv := range os.Environ() {
-		if strings.HasPrefix(kv, "GIT_INDEX_FILE=") || strings.HasPrefix(kv, "GIT_DIR=") || strings.HasPrefix(kv, "GIT_WORK_TREE=") {
-			continue
-		}
-		env = append(env, kv)
-	}
-	env = append(env, "GIT_TERMINAL_PROMPT=0", "GIT_EDITOR=true", "GIT_OPTIONAL_LOCKS=0")
+// gitEnv is base, the environment childproc.Git set, with no optional locks
+// and extra. childproc.Git already left out the caller's index and
+// repository and set nothing interactive.
+func gitEnv(base, extra []string) []string {
+	env := append(base, "GIT_OPTIONAL_LOCKS=0")
 	return append(env, extra...)
 }
 
@@ -437,15 +454,14 @@ const gitWaitDelay = 2 * time.Second
 // git runs one git command in dir, bounded by ctx, and returns its stdout. A
 // failure carries git's own message.
 func git(ctx context.Context, dir string, extra []string, args ...string) (string, error) {
-	cmd := childproc.CommandContext(ctx, "git", args...)
+	cmd := childproc.Git(ctx, dir, args...)
 	// A child of git, such as git-remote-https on a remote that stopped
 	// answering, keeps the output pipes open after the context kills git.
 	// Without a delay, Run would wait for that child and the timeout would
 	// not hold.
 	cmd.WaitDelay = gitWaitDelay
 	cmd.Cancel = killTree(cmd)
-	cmd.Dir = dir
-	cmd.Env = gitEnv(extra)
+	cmd.Env = gitEnv(cmd.Env, extra)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr

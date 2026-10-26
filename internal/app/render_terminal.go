@@ -282,15 +282,17 @@ func (m *OS) renderTerminal(window *terminal.Window, isFocused bool, inTerminalM
 		return window.CachedContent
 	}
 
-	// Whether the host terminal is drawing a real cursor decides only whether
-	// the cell loop paints a fake one. getRealCursor takes the focused window's
-	// read side of ioMu itself, and when this window is the focused one that is
-	// the very same lock acquired just below. w.ioMu is a sync.RWMutex, which is
-	// not reentrant for readers: once the PTY writer queues a Lock, every later
-	// RLock parks behind it, so a second RLock taken while the first is still
-	// held deadlocks against a writer that is waiting on that first one. Query
-	// it here, before the lock is taken, so the two acquisitions never nest.
-	useRealCursor := m.getRealCursor() != nil
+	// A native cursor retains rendering ownership even while hidden, so a guest
+	// visibility change before the cell walk cannot enable the software fallback.
+	// paneCursor takes the focused window's read side of ioMu itself, and when
+	// this window is the focused one that is the very same lock acquired just
+	// below. w.ioMu is a sync.RWMutex, which is not reentrant for readers: once
+	// the PTY writer queues a Lock, every later RLock parks behind it, so a second
+	// RLock taken while the first is still held deadlocks against a writer that
+	// is waiting on that first one. Query it here, before the lock is taken, so
+	// the two acquisitions never nest.
+	nativeCursor, _ := m.paneCursor()
+	useRealCursor := nativeCursor != nil
 
 	// Hoisted deliberately. AnyOverlayOpen walks every overlay gate, and the
 	// cursor test below runs once per cell. When it built a map, asking per
@@ -559,21 +561,21 @@ func (m *OS) renderTerminal(window *terminal.Window, isFocused bool, inTerminalM
 	}
 
 	// The dim and the ground it carries toward, resolved once for the pane
-	// rather than per cell. dimT is zero for a focused pane, for an unset
-	// option, and for an untheme where there is no known ground to carry to,
-	// and a zero dimT makes the cell loop below identical to what it was.
+	// rather than per cell. dimT is zero for a focused pane and for an unset
+	// option, and a zero dimT makes the cell loop below identical to what it
+	// was. A pane whose colours are not known still dims: see dimCell.
 	var (
 		dimScratch   uv.Cell
 		dimMemo      blendMemo
 		dimFg, dimBg color.Color
+		dimPal       *[16]color.Color
 		dimT         float64
 		dimText      bool
 	)
 	if dim > 0 {
-		if dimFg, dimBg = m.paneDimGround(); dimBg != nil {
-			dimT = float64(dim) / 100
-			dimText = m.Settings.DimForeground
-		}
+		dimFg, dimBg, dimPal = m.paneDimGround()
+		dimT = float64(dim) / 100
+		dimText = m.Settings.DimForeground
 	}
 
 	// The pane background, for the two things drawn here against it rather
@@ -944,7 +946,7 @@ func (m *OS) renderTerminal(window *terminal.Window, isFocused bool, inTerminalM
 				// own entry and the focused pane's entries are untouched.
 				styleCell := cell
 				if dimT > 0 {
-					styleCell = dimCell(&dimScratch, cell, dimFg, dimBg, dimT, dimText, &dimMemo)
+					styleCell = dimCell(&dimScratch, cell, dimFg, dimBg, dimPal, dimT, dimText, &dimMemo)
 				}
 				if isCursorPos {
 					styleCell = paneGroundCell(&groundScratch, styleCell, ground)

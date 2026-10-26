@@ -100,7 +100,7 @@ func handleMouseClick(msg tea.MouseClickMsg, o *app.OS) (*app.OS, tea.Cmd) {
 			o.FocusSidebarSession(edge)
 			if w := o.SidebarSessionPaneAt(X, Y); w != nil {
 				o.FocusSidebarSessionPane(w)
-				if w.Terminal != nil && w.Terminal.HasMouseMode() {
+				if paneTakesMouse(o, w) {
 					if tx, ty, inside := w.ScreenToTerminal(X, Y); inside {
 						sendMouseToWindow(o, w, uv.MouseClickEvent{X: tx, Y: ty, Button: uv.MouseButton(mouse.Button), Mod: uv.KeyMod(mouse.Mod)})
 					}
@@ -157,8 +157,7 @@ func handleMouseClick(msg tea.MouseClickMsg, o *app.OS) (*app.OS, tea.Cmd) {
 			}
 			return o, nil
 		case app.DockSessionClose:
-			o.OpenSessionClose()
-			return o, nil
+			return o, o.OpenSessionClose()
 		case app.DockSessionNew:
 			o.OpenNewSessionPicker()
 			return o, nil
@@ -397,7 +396,7 @@ func handleMouseClick(msg tea.MouseClickMsg, o *app.OS) (*app.OS, tea.Cmd) {
 			return o, nil
 		}
 		// Forward mouse only when app explicitly requested mouse tracking (DECSET 1000-1003)
-		if clickedWindow.Terminal != nil && clickedWindow.Terminal.HasMouseMode() {
+		if paneTakesMouse(o, clickedWindow) {
 			// Convert to terminal-relative coordinates (0-based)
 			termX, termY, inContent := clickedWindow.ScreenToTerminal(X, Y)
 			// Check if click is within terminal content area
@@ -466,6 +465,9 @@ func handleMouseClick(msg tea.MouseClickMsg, o *app.OS) (*app.OS, tea.Cmd) {
 				o.CloseWindowByHand(clickedWindowIndex)
 			case app.WindowButtonMinimize:
 				o.MinimizeWindow(clickedWindowIndex)
+			case app.WindowButtonFloat:
+				o.FocusWindow(clickedWindowIndex)
+				o.ToggleFloating()
 			case app.WindowButtonZoom:
 				// On a tiled pane the control is the zoom. A full-screen snap
 				// there would fight the tiler, which owns the rectangle and

@@ -258,6 +258,8 @@ func (d *ActionDispatcher) registerHandlers() {
 	// Both open the same dialog; see worktree_prompt.go for the verb behind it.
 	d.Register("session_new_worktree", handleSessionNewWorktree)
 	d.Register("repo_new_worktree", handleRepoNewWorktree)
+	// The third way in, by key: the repository of the focused pane's folder.
+	d.Register("new_worktree", handleNewWorktree)
 
 	// The rail's file actions. They are dispatched by key from HandleSidebarKey,
 	// which reads its own scope, and they are registered here because the files
@@ -324,6 +326,10 @@ func (d *ActionDispatcher) Dispatch(action string, msg tea.KeyPressMsg, o *app.O
 	if !ok && strings.HasPrefix(action, config.CommandActionPrefix) {
 		handler, ok = handleCommandBinding(action), true
 	}
+	// open_menu:NAME opens a declared menu, named in the action the same way.
+	if !ok && strings.HasPrefix(action, config.OpenMenuPrefix) {
+		handler, ok = handleOpenMenu(action), true
+	}
 	if ok {
 		// Record the action if tape recording is active
 		if o.TapeRecorder != nil && o.TapeRecorder.IsRecording() {
@@ -354,7 +360,7 @@ func (d *ActionDispatcher) Dispatch(action string, msg tea.KeyPressMsg, o *app.O
 // HasAction checks if an action is registered
 func (d *ActionDispatcher) HasAction(action string) bool {
 	_, ok := d.handlers[action]
-	return ok || strings.HasPrefix(action, config.CommandActionPrefix)
+	return ok || strings.HasPrefix(action, config.CommandActionPrefix) || strings.HasPrefix(action, config.OpenMenuPrefix)
 }
 
 // handleCommandBinding runs the [[keybindings.command]] entry behind action.
@@ -631,6 +637,13 @@ func handleToggleTiling(_ tea.KeyPressMsg, o *app.OS) (*app.OS, tea.Cmd) {
 	} else {
 		o.ShowNotification("Tiling off", "info", o.Settings.NotificationDuration)
 	}
+	return o, nil
+}
+
+// handleToggleFloating floats the focused pane or tiles it. A TML surface
+// moves between a popup and a tiled pane, and keeps its state.
+func handleToggleFloating(_ tea.KeyPressMsg, o *app.OS) (*app.OS, tea.Cmd) {
+	o.ToggleFloating()
 	return o, nil
 }
 
@@ -1037,6 +1050,8 @@ func handleToggleHelp(_ tea.KeyPressMsg, o *app.OS) (*app.OS, tea.Cmd) {
 	o.ShowHelp = !o.ShowHelp
 	if o.ShowHelp {
 		o.HelpScrollOffset = 0 // Reset scroll when opening
+	} else {
+		o.HelpClosed()
 	}
 	return o, nil
 }
@@ -1045,6 +1060,7 @@ func handleQuit(_ tea.KeyPressMsg, o *app.OS) (*app.OS, tea.Cmd) {
 	// Close help if showing
 	if o.ShowHelp {
 		o.ShowHelp = false
+		o.HelpClosed()
 		return o, nil
 	}
 	return requestQuit(o)
@@ -1177,8 +1193,7 @@ func handleSettingsSidebar(_ tea.KeyPressMsg, o *app.OS) (*app.OS, tea.Cmd) {
 // The other two kill rows say what becomes of this client and so can only mean
 // the session it is in; this one is the row every other session's menu carries.
 func handleKillSession(_ tea.KeyPressMsg, o *app.OS) (*app.OS, tea.Cmd) {
-	o.OpenSessionCloseFor(o.TakeMenuSession())
-	return o, nil
+	return o, o.OpenSessionCloseFor(o.TakeMenuSession())
 }
 
 // handleRenameSession opens the rename editor on the session whose row the menu
@@ -1210,6 +1225,13 @@ func handleSessionNewWorktree(_ tea.KeyPressMsg, o *app.OS) (*app.OS, tea.Cmd) {
 // group header the menu was opened on.
 func handleRepoNewWorktree(_ tea.KeyPressMsg, o *app.OS) (*app.OS, tea.Cmd) {
 	o.BeginWorktreePromptForRepo(o.TakeMenuRepo())
+	return o, nil
+}
+
+// handleNewWorktree opens the worktree dialog on the repository of the focused
+// pane's folder, or says why it cannot.
+func handleNewWorktree(_ tea.KeyPressMsg, o *app.OS) (*app.OS, tea.Cmd) {
+	o.BeginWorktreePromptForFocusedPane()
 	return o, nil
 }
 

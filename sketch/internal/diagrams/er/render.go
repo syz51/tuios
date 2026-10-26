@@ -1,4 +1,4 @@
-// Ported from pele src/diagrams/er/render.ts at 8fad23bd51783e4df1204e177a7fb0d2a30dcd13.
+// Ported from pele src/diagrams/er/render.ts at 4eff76f98c73b6817800a05773517f35832e4e92.
 
 package er
 
@@ -166,7 +166,7 @@ func draw(db *ErDb, config types.Config, options types.RenderOptions, turned boo
 	smallSize := js.Round(size * 0.875)
 	measurer := options.Measurer
 	if measurer == nil {
-		measurer = text.DefaultMeasurer(options.FontFamily, "")
+		measurer = text.DefaultMeasurer(options.FontFamily, options.FontFamilyMono)
 	}
 	pad := types.Or(options.Padding, 8)
 	icons := options.Icons
@@ -478,7 +478,7 @@ func draw(db *ErDb, config types.Config, options types.RenderOptions, turned boo
 		display = text.DecodeEntities(display)
 		if strings.Contains(classes+" ", " internal-link ") && name != "" && (options.Links == nil || *options.Links) {
 			// The name ends up in an href, so it gets the same check as a URL.
-			_, safe := util.LinkUrl(util.SanitizeUrl(display), options)
+			safe := util.InternalLink(display, options)
 			target := svg.Esc(display)
 			href := ""
 			if safe {

@@ -216,12 +216,11 @@ func (m *OS) applyTheme(name string) {
 // package and repaints so the new colors show immediately. Empty values clear
 // the override and restore the theme-derived colors.
 func (m *OS) applyBorderColors() {
-	focused, unfocused := "", ""
+	var overrides theme.BorderOverrides
 	if m.UserConfig != nil {
-		focused = m.UserConfig.Appearance.BorderFocusedColor
-		unfocused = m.UserConfig.Appearance.BorderUnfocusedColor
+		overrides = m.UserConfig.Appearance.BorderOverrides()
 	}
-	theme.SetBorderOverrides(focused, unfocused)
+	theme.SetBorderOverrides(overrides)
 	m.MarkAllDirty()
 }
 
@@ -331,7 +330,7 @@ func (m *OS) ToggleShowKeys() tea.Cmd {
 // the command-palette entry so both stay in sync and survive a restart.
 func (m *OS) ToggleFocusFollowsMouse() tea.Cmd {
 	m.Settings.FocusFollowsMouse = !m.Settings.FocusFollowsMouse
-	m.setAppearance(func(a *config.AppearanceConfig) { a.FocusFollowsMouse = boolPtr(m.Settings.FocusFollowsMouse) })
+	m.setAppearance(func(a *config.AppearanceConfig) { a.FocusFollowsMouse = new(m.Settings.FocusFollowsMouse) })
 	return m.persistSettings()
 }
 
@@ -344,9 +343,6 @@ var fpsOptions = []string{fpsAutoLabel, "30", "60", "90", "120", "144", "165", "
 
 // fpsAutoLabel is how the row spells max_fps = "auto".
 const fpsAutoLabel = "Auto"
-
-// boolPtr returns a pointer to b, for the *bool config fields.
-func boolPtr(b bool) *bool { return &b }
 
 // enumItem builds an enum setting bound to a string config global via getters
 // and a setter that updates the global, mirrors to the persisted config, and
@@ -397,6 +393,7 @@ func (m *OS) settingsCategories() []settingsCategory {
 			opt("appearance.theme_light"),
 			custom("appearance.glyphs", m.glyphItem()),
 			opt("appearance.border_style"),
+			opt("appearance.frame_panels"),
 			opt("appearance.window_title_position"),
 			opt("appearance.window_title_style"),
 			opt("appearance.window_title_align"),
@@ -413,6 +410,8 @@ func (m *OS) settingsCategories() []settingsCategory {
 			opt("appearance.scrollbar.thumb"),
 			opt("appearance.scrollbar.track"),
 			opt("appearance.border_focused_color"),
+			opt("appearance.border_focused_color_window"),
+			opt("appearance.border_focused_color_terminal"),
 			opt("appearance.border_unfocused_color"),
 			opt("appearance.border_focused_gradient"),
 			opt("appearance.border_gradient_angle"),
@@ -478,6 +477,7 @@ func (m *OS) settingsCategories() []settingsCategory {
 			opt("appearance.sidebar.header_case"),
 			opt("appearance.sidebar.row_style"),
 			opt("appearance.sidebar.header_style"),
+			opt("appearance.sidebar.cursor_background"),
 			opt("appearance.sidebar.density"),
 			opt("appearance.sidebar.show_glyphs"),
 			opt("appearance.sidebar.show_counts"),
@@ -485,6 +485,7 @@ func (m *OS) settingsCategories() []settingsCategory {
 			opt("appearance.sidebar.file_icons"),
 			opt("appearance.sidebar.file_icon_colors"),
 			opt("appearance.sidebar.folder_click"),
+			opt("appearance.sidebar.files_style"),
 			opt("appearance.sidebar.editor"),
 			opt("appearance.sidebar.file_actions"),
 			opt("appearance.sidebar.file_delete"),
@@ -639,6 +640,7 @@ func (m *OS) settingsCategories() []settingsCategory {
 		opt("notifications.warning_duration"),
 		opt("notifications.error_duration"),
 		opt("notifications.error_sticky"),
+		opt("notifications.bell"),
 	}
 	// The agent alerts, under their heading row. With the agent features
 	// off both go, heading and all.

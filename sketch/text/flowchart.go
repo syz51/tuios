@@ -107,6 +107,26 @@ func scaleOf(l *sketch.Layout, kind *graphKind) (sx, sy float64) {
 			sy = math.Max(sy, 4/dy)
 		}
 	}
+	// A label between two boxes side by side fits the gap between them, so
+	// that it covers neither box: pele leaves that room, as C4 does since
+	// pele 1.9.0.
+	for k := range l.Edges {
+		e := &l.Edges[k]
+		w := widest(e.Label)
+		if w == 0 || e.From == e.To || e.From < 0 || e.To < 0 || e.From >= len(l.Nodes) || e.To >= len(l.Nodes) {
+			continue
+		}
+		a, b := &l.Nodes[e.From], &l.Nodes[e.To]
+		if a.X > b.X {
+			a, b = b, a
+		}
+		left, right := a.X+a.W/2, b.X-b.W/2
+		if a.Group || b.Group || right <= left || e.LabelX < left || e.LabelX > right ||
+			math.Abs(e.LabelY-a.Y) > a.H/2 || math.Abs(e.LabelY-b.Y) > b.H/2 {
+			continue
+		}
+		sx = math.Max(sx, float64(w+4)/(right-left))
+	}
 	// A cell is about twice as tall as it is wide.
 	sy = math.Max(sy, sx*0.45)
 	return sx, sy
@@ -278,10 +298,41 @@ func drawGraph(l *sketch.Layout, opt Options, kind *graphKind) (*canvas, error) 
 	}
 
 	// Each end gets a cell of its own along its side, in the layout's order.
+	// Edges that arrive on one side with the same head, the same stroke and
+	// no text beside it share one end, so they join into one arrow instead of
+	// a row of heads side by side.
 	placed := map[[2]int]point{}
 	for key, list := range ends {
 		node, sd := key[0], key[1]
 		b := boxes[node]
+		var joined []int
+		var joinedAt float64
+		head, stroke := "", ""
+		same := true
+		for _, e := range list {
+			if !e.last || e.text > 0 {
+				continue
+			}
+			end, st := l.Edges[e.edge].End, l.Edges[e.edge].Stroke
+			if head != "" && (end != head || st != stroke) {
+				same = false
+			}
+			head, stroke = end, st
+			joined = append(joined, e.edge)
+			joinedAt += e.at
+		}
+		if len(joined) > 1 && same && head != "" {
+			joinedAt /= float64(len(joined))
+			rest := list[:0:0]
+			for _, e := range list {
+				if !e.last || e.text > 0 {
+					rest = append(rest, e)
+				}
+			}
+			list = append(rest, graphEnd{edge: joined[0], last: true, at: joinedAt})
+		} else {
+			joined = nil
+		}
 		slices.SortStableFunc(list, func(a, b graphEnd) int {
 			switch {
 			case a.at < b.at:
@@ -323,6 +374,11 @@ func drawGraph(l *sketch.Layout, opt Options, kind *graphKind) (*canvas, error) 
 				idx = 1
 			}
 			placed[[2]int{e.edge, idx}] = at
+			if e.last && len(joined) > 0 && e.edge == joined[0] {
+				for _, other := range joined[1:] {
+					placed[[2]int{other, 1}] = at
+				}
+			}
 		}
 	}
 
@@ -418,16 +474,28 @@ func drawGraph(l *sketch.Layout, opt Options, kind *graphKind) (*canvas, error) 
 		c.vline(b.x1, b.y0, b.y1, weight, roleFrame)
 	}
 
-	// Edges.
+	// Edges. An edge from an actor of a use case diagram takes the actor's
+	// series colour, so each actor's edges can be told apart where they run
+	// side by side.
+	actor := map[int]uint8{}
+	for i, n := range l.Nodes {
+		if n.Shape == "actor" {
+			actor[i] = seriesRole(len(actor))
+		}
+	}
 	toward := [4]uint8{down, left, up, right}
 	outward := [4]uint8{up, right, down, left}
 	for _, p := range paths {
 		if p.invisible || p.self {
 			continue
 		}
+		role := uint8(roleLine)
+		if r, ok := actor[p.from]; ok {
+			role = r
+		}
 		// The first cell joins the box it leaves. A group's frame is a line, so
 		// it gets a junction where the edge leaves it.
-		c.stroke(p.pts[0].x+dx, p.pts[0].y+dy, toward[p.startSide], p.weight, roleLine)
+		c.stroke(p.pts[0].x+dx, p.pts[0].y+dy, toward[p.startSide], p.weight, role)
 		if l.Nodes[p.from].Group {
 			in := [4]point{{0, 1}, {-1, 0}, {0, -1}, {1, 0}}[p.startSide]
 			c.stroke(p.pts[0].x+dx+in.x, p.pts[0].y+dy+in.y, outward[p.startSide], light, roleFrame)
@@ -437,9 +505,9 @@ func drawGraph(l *sketch.Layout, opt Options, kind *graphKind) (*canvas, error) 
 			b := point{p.pts[k].x + dx, p.pts[k].y + dy}
 			switch {
 			case a.x == b.x:
-				c.vline(a.x, a.y, b.y, p.weight, roleLine)
+				c.vline(a.x, a.y, b.y, p.weight, role)
 			case a.y == b.y:
-				c.hline(a.x, b.x, a.y, p.weight, roleLine)
+				c.hline(a.x, b.x, a.y, p.weight, role)
 			case p.axes[k] == 0:
 				mid := (a.y + b.y) / 2
 				if k == len(p.pts)-1 {
@@ -448,9 +516,9 @@ func drawGraph(l *sketch.Layout, opt Options, kind *graphKind) (*canvas, error) 
 						mid = b.y + 1
 					}
 				}
-				c.vline(a.x, a.y, mid, p.weight, roleLine)
-				c.hline(a.x, b.x, mid, p.weight, roleLine)
-				c.vline(b.x, mid, b.y, p.weight, roleLine)
+				c.vline(a.x, a.y, mid, p.weight, role)
+				c.hline(a.x, b.x, mid, p.weight, role)
+				c.vline(b.x, mid, b.y, p.weight, role)
 			default:
 				mid := (a.x + b.x) / 2
 				if k == len(p.pts)-1 {
@@ -459,9 +527,9 @@ func drawGraph(l *sketch.Layout, opt Options, kind *graphKind) (*canvas, error) 
 						mid = b.x + 1
 					}
 				}
-				c.hline(a.x, mid, a.y, p.weight, roleLine)
-				c.vline(mid, a.y, b.y, p.weight, roleLine)
-				c.hline(mid, b.x, b.y, p.weight, roleLine)
+				c.hline(a.x, mid, a.y, p.weight, role)
+				c.vline(mid, a.y, b.y, p.weight, role)
+				c.hline(mid, b.x, b.y, p.weight, role)
 			}
 		}
 	}
@@ -473,6 +541,18 @@ func drawGraph(l *sketch.Layout, opt Options, kind *graphKind) (*canvas, error) 
 		}
 		if kind.node == nil || !kind.node(c, move(boxes[i]), &l.Nodes[i]) {
 			drawNode(c, move(boxes[i]), n.Shape, n.Label)
+		}
+		if r, ok := actor[i]; ok {
+			// The stick figure in the actor's colour.
+			b := move(boxes[i])
+			top := b.y0 + (b.y1-b.y0+1-len(n.Label))/2
+			for y := top; y < top+3; y++ {
+				for x := b.x0; x <= b.x1; x++ {
+					if q := c.at(x, y); q != nil && q.r != 0 && q.r != ' ' {
+						q.role = r
+					}
+				}
+			}
 		}
 	}
 	// Group titles, on the top line.
@@ -666,7 +746,7 @@ func drawNode(c *canvas, b rect, shape string, label []string) {
 			c.put(x, b.y0, '━', roleBox)
 		}
 		return
-	case shape == "text":
+	case shape == "text", shape == "actor":
 	default:
 		outline(c, b, shape)
 	}

@@ -289,6 +289,8 @@ func resolveRef(gitdir, commondir, ref string) string {
 			return sha
 		}
 	}
+	// A read error leaves the ref unknown, the same as a ref that is not there.
+	_ = sc.Err()
 	return ""
 }
 
@@ -328,6 +330,10 @@ func upstreamOf(commondir, branch string) string {
 			merge = strings.TrimSpace(value)
 		}
 	}
+	if sc.Err() != nil {
+		// Half a section can pair a remote with the wrong merge ref.
+		return ""
+	}
 	if remote == "" || merge == "" {
 		return ""
 	}
@@ -350,11 +356,10 @@ func upstreamOf(commondir, branch string) string {
 var countCommits = func(root, head, upstream string) (ahead, behind int, err error) {
 	ctx, cancel := context.WithTimeout(context.Background(), countTimeout)
 	defer cancel()
-	cmd := childproc.CommandContext(ctx, "git", "rev-list", "--left-right", "--count", head+"..."+upstream)
-	cmd.Dir = root
+	cmd := childproc.Git(ctx, root, "rev-list", "--left-right", "--count", head+"..."+upstream)
 	// A repository is read with the user's git but never with the user's
 	// pager, editor or prompt: this runs unattended behind a sidebar.
-	cmd.Env = append(os.Environ(), "GIT_PAGER=cat", "GIT_TERMINAL_PROMPT=0", "GIT_OPTIONAL_LOCKS=0")
+	cmd.Env = append(cmd.Env, "GIT_PAGER=cat", "GIT_OPTIONAL_LOCKS=0")
 	out, err := cmd.Output()
 	if err != nil {
 		return 0, 0, err
@@ -400,10 +405,9 @@ func ReadDirty(root string) (Dirty, bool) {
 	// format is frozen by git's own compatibility promise. Untracked files are
 	// counted but not walked into: a directory of a thousand new files is one
 	// line and one number, not a thousand.
-	cmd := childproc.CommandContext(ctx, "git", "status", "--porcelain",
+	cmd := childproc.Git(ctx, root, "status", "--porcelain",
 		"--untracked-files=normal", "--no-renames")
-	cmd.Dir = root
-	cmd.Env = append(os.Environ(), "GIT_PAGER=cat", "GIT_TERMINAL_PROMPT=0", "GIT_OPTIONAL_LOCKS=0")
+	cmd.Env = append(cmd.Env, "GIT_PAGER=cat", "GIT_OPTIONAL_LOCKS=0")
 	out, err := cmd.Output()
 	if err != nil {
 		return Dirty{}, false

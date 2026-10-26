@@ -43,9 +43,9 @@ it with your theme's colours. Keys and the mouse work in it. The daemon keeps
 the surface, so it stays when you detach.
 
 A document is TML text (an XML subset) or TML JSON. Run tuios tml validate to
-check one.`,
+check one, and tuios tml render to see it as text before you show it.`,
 	}
-	cmd.AddCommand(newTMLShowCommand(), newTMLCloseCommand(), newTMLValidateCommand(),
+	cmd.AddCommand(newTMLShowCommand(), newTMLCloseCommand(), newTMLValidateCommand(), newTMLRenderCommand(),
 		newTMLPatchCommand(), newTMLReplaceCommand(), newTMLGetCommand(), newTMLListCommand())
 	return cmd
 }
@@ -92,7 +92,7 @@ patch or tuios tml replace. That makes the script the surface's owner.`,
 			return runTMLShow(args[0], o, os.Stdin, os.Stdout)
 		},
 	}
-	cmd.Flags().StringVarP(&o.session, "session", "s", "", "Target session (default: most recently active)")
+	cmd.Flags().StringVarP(&o.session, "session", "s", "", "Target session (default: this pane's session, else the most recently active)")
 	cmd.Flags().BoolVar(&o.popup, "popup", false, "Show it as a popup (the default)")
 	cmd.Flags().BoolVar(&o.pane, "pane", false, "Show it as a tiled pane")
 	cmd.Flags().StringVar(&o.name, "name", "", "Name for the window (default: the document's title)")
@@ -414,7 +414,7 @@ func newTMLListCommand() *cobra.Command {
 			return tmlCall("tml-list", params)
 		},
 	}
-	cmd.Flags().StringVarP(&sess, "session", "s", "", "Target session (default: most recently active)")
+	cmd.Flags().StringVarP(&sess, "session", "s", "", "Target session (default: this pane's session, else the most recently active)")
 	_ = cmd.RegisterFlagCompletionFunc("session", completeSessionNames)
 	return cmd
 }

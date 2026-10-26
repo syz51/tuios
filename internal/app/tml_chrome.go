@@ -12,6 +12,7 @@ import (
 	"github.com/Gaurav-Gosain/tuios/internal/session"
 	"github.com/Gaurav-Gosain/tuios/internal/terminal"
 	"github.com/Gaurav-Gosain/tuios/internal/theme"
+	"github.com/Gaurav-Gosain/tuios/internal/tmldraw"
 )
 
 // The chrome tuios draws around a TML surface.
@@ -56,9 +57,10 @@ func tmlWindowParts(w *terminal.Window) (owner, title string, ok bool) {
 	return tmlNameParts(w.CustomName)
 }
 
-// tmlRailLabel is the rail's label for a TML window: the owner, then the
-// title. A rail row is cut at its end, so the owner goes first, where the
-// cut cannot reach it and a title cannot stand in for it.
+// tmlRailLabel is the rail's label for a TML window: the document's title,
+// then the owner. A rail row is cut at its end, so the title is held to
+// tmlRailTitleCells, and the owner stays in sight on a rail of the usual
+// width.
 func tmlRailLabel(w *terminal.Window) (string, bool) {
 	owner, title, ok := tmlWindowParts(w)
 	if !ok {
@@ -67,8 +69,11 @@ func tmlRailLabel(w *terminal.Window) (string, bool) {
 	if title == "" {
 		return "from " + owner, true
 	}
-	return "from " + owner + " · " + title, true
+	return overlay.Truncate(title, tmlRailTitleCells) + " · " + owner, true
 }
+
+// tmlRailTitleCells caps the title part of a TML window's rail label.
+const tmlRailTitleCells = 24
 
 // isTMLPopup reports whether w is a popup that draws a TML surface as a
 // dialog.
@@ -77,52 +82,13 @@ func (m *OS) isTMLPopup(w *terminal.Window) bool {
 }
 
 // tmlInset is where the surface sits in a TML window's content box: the
-// whole box for a pane, and inside a margin for a popup, two cells at the
-// sides and a row above and below when the popup has the rows for it.
+// margin of tmldraw.Inset, for a window this client draws as TML.
 func (m *OS) tmlInset(w *terminal.Window) (dx, dy, iw, ih int) {
 	cw, ch := max(w.ContentWidth(), 1), max(w.ContentHeight(), 1)
-	if !m.isTMLPopup(w) {
+	if !m.DrawsTML(w) {
 		return 0, 0, cw, ch
 	}
-	switch {
-	case cw >= 24:
-		dx = 2
-	case cw >= 8:
-		dx = 1
-	}
-	if ch >= 5 {
-		dy = 1
-	}
-	return dx, dy, cw - 2*dx, ch - 2*dy
-}
-
-// tmlPad puts the surface's lines into the content box with the margin of
-// tmlInset, on the pane's own ground.
-func tmlPad(body string, dx, dy, cw, ch int) string {
-	if dx == 0 && dy == 0 {
-		return body
-	}
-	side := strings.Repeat(" ", dx)
-	blank := strings.Repeat(" ", cw)
-	lines := strings.Split(body, "\n")
-	out := make([]string, 0, ch)
-	for range dy {
-		out = append(out, blank)
-	}
-	inner := cw - 2*dx
-	for _, l := range lines {
-		if len(out) >= ch-dy {
-			break
-		}
-		if w := ansi.StringWidth(l); w < inner {
-			l += strings.Repeat(" ", inner-w)
-		}
-		out = append(out, side+l+side)
-	}
-	for len(out) < ch {
-		out = append(out, blank)
-	}
-	return strings.Join(out, "\n")
+	return tmldraw.Inset(cw, ch)
 }
 
 // renderTMLDialogBox frames a TML popup's content as a dialog. content is
@@ -181,10 +147,24 @@ func (m *OS) renderTMLDialogBox(window *terminal.Window, content string) string 
 		top += overlay.Style(bg).Foreground(overlay.Readable(pal.Accent, bg)).Bold(true).Render(titleText)
 		used += lipgloss.Width(titleText)
 	}
-	top += gap + rule(w-used-1) + frame.Render(tr)
+	// The control that docks the surface as a pane, at the right of the top
+	// border, where a pane's title bar has its controls. It is recorded as a
+	// window control, so the click path is the one every control takes.
+	dock := " dock "
+	dockW := lipgloss.Width(dock)
+	var controls []WindowButtonRect
+	if fill := w - used - 2 - dockW; fill >= 1 {
+		top += gap + rule(fill) + overlay.Style(bg).Foreground(overlay.Readable(pal.AccentBright, bg)).Bold(true).Render(dock) + rule(1) + frame.Render(tr)
+		controls = []WindowButtonRect{{Action: WindowButtonFloat, X: window.X + 1 + w - 1 - dockW, W: dockW, Y: window.Y}}
+	} else {
+		top += gap + rule(w-used-1) + frame.Render(tr)
+	}
 
 	// Bottom border: the key tuios answers for in every popup.
 	hints := []overlay.Hint{{Key: "esc", Label: "close", Priority: overlay.HintEssential}}
+	if key := contextMenuHint(m.KeybindRegistry, "window_prefix_float", &m.Settings); key != "" {
+		hints = append(hints, overlay.Hint{Key: key, Label: "dock as a pane"})
+	}
 	strip, stripW := overlay.FitHintStrip(hints, max(w-3, 0), bg, pal)
 	bottomLine := ruleOf(bottomRule)
 	bottom := frame.Render(bl)
@@ -207,7 +187,7 @@ func (m *OS) renderTMLDialogBox(window *terminal.Window, content string) string 
 		out = append(out, left+overlay.Fill(l, w, bg)+right)
 	}
 	out = append(out, bottom)
-	m.recordWindowButtons(window.ID, nil)
+	m.recordWindowButtons(window.ID, controls)
 	return strings.Join(out, "\n")
 }
 

@@ -1,6 +1,7 @@
 package loom
 
 import (
+	"slices"
 	"strconv"
 
 	"tuios.dev/tml"
@@ -396,21 +397,8 @@ func (w *scrollWidget) offset(s *Surface, b *box) int {
 }
 
 func (w *scrollWidget) paint(s *Surface, b *box, c *canvas, r Rect) {
-	if !w.over || r.Dy() <= 0 {
-		return
-	}
-	x := r.Max.X - 1
-	thumb := max(1, r.Dy()*r.Dy()/max(w.content, 1))
-	top := 0
-	if w.content > r.Dy() {
-		top = (r.Dy() - thumb) * w.offset(s, b) / (w.content - r.Dy())
-	}
-	for y := 0; y < r.Dy(); y++ {
-		g, st := s.g.scrollTrack, style{fg: "edge"}
-		if y >= top && y < top+thumb {
-			g, st = s.g.scrollTh, style{fg: "mute"}
-		}
-		c.text(x, r.Min.Y+y, g, st, 1)
+	if w.over {
+		paintBar(s, c, r, w.content, w.offset(s, b))
 	}
 }
 
@@ -419,6 +407,10 @@ func viewport(b *box) Rect {
 	in := b.inner()
 	switch w := b.w.(type) {
 	case *scrollWidget:
+		if w.over {
+			in.Max.X--
+		}
+	case *pageWidget:
 		if w.over {
 			in.Max.X--
 		}
@@ -448,12 +440,7 @@ func needsPaint(b *box) bool {
 	if b.dirty || b.rect != b.prev {
 		return true
 	}
-	for _, k := range b.kids {
-		if needsPaint(k) {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(b.kids, needsPaint)
 }
 
 // paint draws b when it changed or force is set, and otherwise looks for

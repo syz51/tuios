@@ -1,4 +1,4 @@
-// Ported from pele src/diagrams/flowchart/render.ts at 8fad23bd51783e4df1204e177a7fb0d2a30dcd13.
+// Ported from pele src/diagrams/flowchart/render.ts at 4eff76f98c73b6817800a05773517f35832e4e92.
 
 package flowchart
 
@@ -153,7 +153,7 @@ func draw(db *FlowDb, config types.Config, options types.RenderOptions, variant 
 	edgeSize := js.Round(size * 0.875)
 	measurer := options.Measurer
 	if measurer == nil {
-		measurer = text.DefaultMeasurer(options.FontFamily, "")
+		measurer = text.DefaultMeasurer(options.FontFamily, options.FontFamilyMono)
 	}
 	wrapLimit := math.Inf(1)
 	if variant != nil && tight {
@@ -477,7 +477,7 @@ func draw(db *FlowDb, config types.Config, options types.RenderOptions, variant 
 		if internal && deref(node.Label) != "" && !(options.Links != nil && !*options.Links) {
 			// The label is a note name, but it still ends up in an href, so it gets the same check as a URL.
 			name := text.DecodeEntities(*node.Label)
-			_, safe := util.LinkUrl(util.SanitizeUrl(name), options)
+			safe := util.InternalLink(name, options)
 			target := svg.Esc(name)
 			href := ""
 			if safe {

@@ -190,6 +190,12 @@ func (m *OS) BuildSessionState() *session.SessionState {
 			state.WorkspaceMasterSplits[ws] = sp.Clone()
 		}
 	}
+	// The layout modes travel for the same reason, and have no live value to
+	// fold in either: recording happens when a row names a layout, so the map
+	// is current by the time state is built.
+	if len(m.WorkspaceLayoutMode) > 0 {
+		state.WorkspaceLayoutModes = maps.Clone(m.WorkspaceLayoutMode)
+	}
 	// The master-stack shapes travel as ops (see master_layout.go), and the
 	// daemon keeps its own copy whatever a push holds. They are here for the
 	// state this client saves without a daemon.
@@ -282,6 +288,10 @@ func (m *OS) RestoreFromState(state *session.SessionState) error {
 	// The dock's bell and activity marks name workspaces of the session being
 	// left. See workspace_marks.go.
 	m.workspaceMarkSet = nil
+	// A drag's order, and a move in flight, wait for the renumber of the
+	// session they were made in.
+	m.pendingWorkspaceOrder = nil
+	m.workspaceMoveInFlight = false
 	// Clamp to a valid workspace: SwitchToWorkspace rejects workspace < 1, so a
 	// state carrying 0 (legacy, or a freshly created session with no windows)
 	// would strand every subsequently created window on an unreachable workspace.
@@ -297,6 +307,10 @@ func (m *OS) RestoreFromState(state *session.SessionState) error {
 	m.adoptWorkspaceStackRatio(state)
 	m.WorkspaceMasterSplits = make(map[int]layout.MasterSplits, len(state.WorkspaceMasterSplits))
 	m.adoptWorkspaceMasterSplits(state)
+	m.WorkspaceLayoutMode = make(map[int]string, len(state.WorkspaceLayoutModes))
+	maps.Copy(m.WorkspaceLayoutMode, state.WorkspaceLayoutModes)
+	m.sessionLayoutMode = ""
+	m.adoptSessionLayoutMode(state)
 	// The shapes belong to the session too, and the seeds this client sent
 	// were sent to the session being left.
 	m.WorkspaceMasterLayout = maps.Clone(state.WorkspaceMasterLayout)
@@ -539,6 +553,9 @@ func (m *OS) ApplyStateSyncFrom(state *session.SessionState, sourceID string) er
 		return nil
 	}
 	fromPeer := sourceID != ""
+	// A renumber goes first, so everything below reads the windows and the
+	// workspace maps under the numbers the state uses.
+	m.adoptWorkspaceRenumbering(state)
 
 	// The daemon now holds what arrived here, which is not necessarily what
 	// this client last pushed, so the record of that push no longer describes
@@ -749,6 +766,7 @@ func (m *OS) ApplyStateSyncFrom(state *session.SessionState, sourceID string) er
 	m.adoptWorkspaceMasterRatio(state)
 	m.adoptWorkspaceStackRatio(state)
 	m.adoptWorkspaceMasterSplits(state)
+	m.adoptWorkspaceLayoutMode(state)
 	m.adoptWorkspaceHasCustom(state)
 	masterRetile := m.adoptWorkspaceMasterLayout(state)
 
@@ -1163,6 +1181,21 @@ func (m *OS) adoptWorkspaceMasterSplits(state *session.SessionState) {
 	}
 }
 
+// adoptWorkspaceLayoutMode takes the session's per-workspace layout modes onto
+// this client, merged on the same terms as the ratios beside it: a state that
+// says nothing about a workspace leaves what this client holds alone, and an
+// entry that is present wins. An older peer that never sends the field changes
+// nothing, which is what makes it additive.
+func (m *OS) adoptWorkspaceLayoutMode(state *session.SessionState) {
+	if len(state.WorkspaceLayoutModes) == 0 {
+		return
+	}
+	if m.WorkspaceLayoutMode == nil {
+		m.WorkspaceLayoutMode = make(map[int]string, len(state.WorkspaceLayoutModes))
+	}
+	maps.Copy(m.WorkspaceLayoutMode, state.WorkspaceLayoutModes)
+}
+
 // adoptWorkspaceHasCustom takes the session's custom-layout flags onto this
 // client.
 //
@@ -1240,6 +1273,22 @@ func (m *OS) updateWindowFromState(w *terminal.Window, ws *session.WindowState) 
 	// is the one the layout pass records (noteDragSlot).
 	if adoptGeometry && w == m.LiveWindowDrag() {
 		adoptGeometry = false
+	}
+
+	// A pane that is sliding is drawn where its animation has it, and the
+	// animation lands it on the target and resizes the guest once when it
+	// gets there. The rectangle in a sync is a target, not a frame: writing it
+	// on the window drew the pane at that rectangle for one frame, the next
+	// tick of the animation put it back mid-slide, and the guest was resized
+	// twice on the way. So a sliding pane is turned toward the sync's
+	// rectangle instead. That is nothing at all when the sync is this
+	// client's own layout coming back, which is the usual case: the push
+	// carries each animation's target. See BuildSessionState.
+	if adoptGeometry {
+		if anim := m.snapInFlight(w); anim != nil {
+			anim.Retarget(ws.X, ws.Y, ws.Width, ws.Height, 0, m.layoutClock())
+			adoptGeometry = false
+		}
 	}
 
 	// Check if size changed
@@ -2467,7 +2516,7 @@ func adoptWindowHost(w *terminal.Window, host string) {
 	if w == nil {
 		return
 	}
-	w.Host = host
+	w.SetHost(host)
 }
 
 // startedByFromWire splits a window's started_by into its session and window,

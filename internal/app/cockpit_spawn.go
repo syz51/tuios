@@ -16,6 +16,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
+	"github.com/Gaurav-Gosain/tuios/internal/childproc"
 	"github.com/Gaurav-Gosain/tuios/internal/composer"
 	"github.com/Gaurav-Gosain/tuios/internal/config"
 	"github.com/Gaurav-Gosain/tuios/internal/federation"
@@ -155,6 +156,8 @@ type spawnStartedMsg struct {
 	sheet *spawnSheet
 	text  string
 	err   error
+	// warn says the agent started and its task was not sent.
+	warn bool
 }
 
 // CockpitSpawnOpen reports whether the spawn sheet is up.
@@ -206,11 +209,15 @@ func (m *OS) CockpitNewAgent() tea.Cmd {
 	return spawnInfoCmd(s.gen, s.folder)
 }
 
-// spawnFolder is the directory "this folder" means: the focused pane's, or
-// the client's own when the pane has not said where it is.
+// spawnFolder is the directory "this folder" means: the folder the focused
+// pane's shell is in, or the client's own when that cannot be read. The sheet
+// runs git there and Start makes a worktree of it, so an OSC 7 report alone
+// never chooses it (paneShellDir).
 func (m *OS) spawnFolder() string {
-	if w := m.GetFocusedWindow(); w != nil && m.paneIsLocal(w) && w.Cwd != "" {
-		return w.Cwd
+	if w := m.GetFocusedWindow(); w != nil && m.paneIsLocal(w) {
+		if dir, ok := paneShellDir(w, true); ok {
+			return dir
+		}
 	}
 	dir, _ := os.Getwd()
 	return dir
@@ -423,7 +430,7 @@ func spawnInfoCmd(gen uint64, folder string) tea.Cmd {
 func spawnBranches(root string) []string {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, "git", "-C", root, "for-each-ref", "--sort=-committerdate", "--count=30",
+	out, err := childproc.Git(ctx, root, "for-each-ref", "--sort=-committerdate", "--count=30",
 		"--format=%(refname:short)", "refs/heads").Output()
 	if err != nil {
 		return nil
@@ -1047,6 +1054,8 @@ func (m *OS) spawnStart() tea.Cmd {
 			Total                   int
 			Ready                   bool
 			Group                   string
+			PromptStatus            string `json:"prompt_status"`
+			PromptNote              string `json:"prompt_note"`
 		}
 		_ = json.Unmarshal(raw, &res)
 		switch {
@@ -1055,7 +1064,11 @@ func (m *OS) spawnStart() tea.Cmd {
 		case verb == "fan":
 			return spawnStartedMsg{sheet: s, text: "Started " + what + where + ". The task is typed when the agent is ready."}
 		case !res.Ready && res.Reason != "":
-			return spawnStartedMsg{sheet: s, text: "Started " + what + " in " + res.Session + where + ". It is not ready: " + res.Reason}
+			return spawnStartedMsg{sheet: s, warn: true, text: "Started " + what + " in " + res.Session + where + ". It is not ready: " + res.Reason}
+		case res.PromptStatus != "" && res.PromptStatus != session.PromptSent:
+			// The agent is up and its task did not go through: the
+			// notice says so, and not that all went well.
+			return spawnStartedMsg{sheet: s, warn: true, text: "Started " + what + " in " + res.Session + where + ". The task was not sent: " + res.PromptNote}
 		}
 		return spawnStartedMsg{sheet: s, text: "Started " + what + " in " + res.Session + where + "."}
 	}
@@ -1096,6 +1109,10 @@ func (m *OS) applySpawnStarted(msg spawnStartedMsg) {
 		msg.sheet.task.Clear()
 		msg.sheet.branch.Clear()
 		msg.sheet.branchAuto = ""
+	}
+	if msg.warn {
+		m.ShowNotification(msg.text, "warning", m.Settings.NotificationDuration*2)
+		return
 	}
 	m.ShowNotification(msg.text, "info", m.Settings.NotificationDuration)
 }

@@ -212,6 +212,8 @@ type ClientEvent struct {
 	Mail session.AgentMailPayload
 	// PaneMark is the push behind a "pane-mark" event.
 	PaneMark session.PaneMarkPayload
+	// PluginAsks is the push behind a "plugin-approvals" event.
+	PluginAsks []session.PluginApprovalAsk
 }
 
 // SessionResizeMsg is sent when the effective session size changes (min of all clients).
@@ -545,6 +547,8 @@ func clientEventMsg(event ClientEvent) tea.Msg {
 		return SessionsChangedMsg{}
 	case "pane-mark":
 		return PaneMarkMsg{Mark: event.PaneMark}
+	case "plugin-approvals":
+		return PluginApprovalsMsg{Asks: event.PluginAsks}
 	case "paste-refused":
 		return PasteRefusedMsg{Message: event.Reason}
 	case "agent-mail-mark":
@@ -571,7 +575,7 @@ func clientEventMsg(event ClientEvent) tea.Msg {
 // gate stays bounded no matter how many idle shells are open.
 func (m *OS) tickNeedsWork() bool {
 	return m.tickAtFrameRate() || len(m.Notifications) > 0 ||
-		len(m.pendingAgentAlerts) > 0 || m.programAlertHeld() || m.spotlightMotionPending ||
+		len(m.pendingAgentAlerts) > 0 || m.programAlertHeld() || m.pointerMotionPending ||
 		m.cockpitHoldDue(time.Now()) || m.tickPolledWork()
 }
 
@@ -794,16 +798,16 @@ func (m *OS) foreignSessionReplanCmd() tea.Cmd {
 
 // foreignSessionRefreshPlan decides whether the next poll should hit the daemon
 // and how long to wait before re-arming. A consumer is on screen when the
-// sidebar reserves columns or the session switcher is open; poll fast then, even
-// for a lone session, because the listing is where the rail reads the titles of
-// windows this client has unsubscribed from. Off screen, fall back to a slow
+// sidebar reserves columns or the session switcher or the go-to picker is open;
+// poll fast then, even for a lone session, because the listing is where the
+// rail reads the titles of windows this client has unsubscribed from. Off screen, fall back to a slow
 // cache-warming poll while foreign sessions exist, and do nothing at all for a
 // lone session, which is what keeps a hidden sidebar free at idle.
 func (m *OS) foreignSessionRefreshPlan() (after time.Duration, refresh bool) {
 	if m.DaemonClient == nil {
 		return foreignSessionRefreshIdle, false
 	}
-	if m.SidebarActive() || m.ShowSessionSwitcher {
+	if m.SidebarActive() || m.ShowSessionSwitcher || m.gotoPicker.open {
 		return foreignSessionRefreshActive, true
 	}
 	if m.DaemonClient.SessionCount() <= 1 {
@@ -927,6 +931,7 @@ func (m *OS) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// Focus reports for every path that moved the focus without FocusWindow.
 	m.reportFocusChange()
 	m.reconcilePrevFocus()
+	m.noteGotoPlace()
 	m.recordScrollAnchors()
 	// Asked again after the handler, not only before it, because the handler
 	// itself is one of the things that lengthens a pane's history: a workspace
@@ -981,6 +986,11 @@ func (m *OS) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// turn that ended with no input is read now. A flag check when not.
 	if side := m.CockpitSideWanted(); side != nil {
 		agents = tea.Batch(agents, side)
+	}
+	// The selected agent's artifacts, read once and again when a surface
+	// opens or closes.
+	if arts := m.CockpitArtifactsWanted(); arts != nil {
+		agents = tea.Batch(agents, arts)
 	}
 	// A verdict the open fan comparison does not show yet is read now. A
 	// nil check when the comparison is closed.
@@ -1154,6 +1164,12 @@ func (m *OS) handleMsg(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 		return m, m.applyCompare(msg)
 	case ckFanActMsg:
 		return m, m.applyFanAct(msg)
+	case tmlPlacedMsg:
+		m.applyTMLPlaced(msg)
+		return m, nil
+	case ckArtifactsMsg:
+		m.applyCockpitArtifacts(msg)
+		return m, nil
 	case ckLivePrimeMsg:
 		m.applyLivePrime(msg)
 		return m, nil
@@ -1404,7 +1420,7 @@ func (m *OS) handleMsg(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 		needsRender := hadAnimations || hasAnimations || m.InteractionMode || m.PrefixActive ||
 			hasBackgroundChanges || m.notifBurnMoved() || notifExpired || leftScriptMode ||
 			m.SidebarMarqueeActive() || m.TooltipPending() || railTitleChanged || zenCrossed ||
-			m.spotlightMotionPending
+			m.pointerMotionPending
 		if !needsRender {
 			m.renderSkipped = true
 			return m, tea.Batch(cmds...)
@@ -1415,9 +1431,9 @@ func (m *OS) handleMsg(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 		// next idleTickerAfter: the next such frame is a whole cell away.
 		m.quietFrame = !(hadAnimations || hasAnimations || m.InteractionMode || m.PrefixActive ||
 			hasBackgroundChanges || leftScriptMode || m.SidebarMarqueeActive() || m.TooltipPending() ||
-			railTitleChanged || zenCrossed || m.spotlightMotionPending)
+			railTitleChanged || zenCrossed || m.pointerMotionPending)
 		m.renderSkipped = false
-		m.spotlightMotionPending = false
+		m.pointerMotionPending = false
 		m.tickStats.Render++
 		// This tick is about to draw, so it counts against the interaction frame
 		// budget too. Without this a motion event landing just after a tick
@@ -1494,10 +1510,21 @@ func (m *OS) handleMsg(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 	case SessionKilledMsg:
 		cmd := ListenForSessionKill(m.sessionKillChan())
 		if msg.Err != nil {
+			// A kill the worktree-deletion note asked for failed: the failed
+			// kill announces itself, so the next kill's note must not be
+			// silenced on its behalf.
+			m.pendingWorktreeKill = false
 			m.ShowNotification("Kill failed: "+msg.Err.Error(), "error", m.Settings.NotificationDuration*2)
 			return m, cmd
 		}
-		m.ShowNotification("Killed session: "+msg.Label, "success", m.Settings.NotificationDuration)
+		// A kill asked for by the worktree-deletion note stays quiet: the note
+		// on screen is the one record of where the stashed changes went, and
+		// this one would replace it with less news.
+		if m.pendingWorktreeKill {
+			m.pendingWorktreeKill = false
+		} else {
+			m.ShowNotification("Killed session: "+msg.Label, "success", m.Settings.NotificationDuration)
+		}
 		// The switcher lists a snapshot, so the row of a session that no longer
 		// exists would sit there until the overlay was reopened.
 		if m.ShowSessionSwitcher {
@@ -1523,8 +1550,13 @@ func (m *OS) handleMsg(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 		// Guest desktop notification or bell delivered off the PTY goroutine;
 		// apply it here on the Bubble Tea goroutine where notification state is
 		// owned, and where the pane it came from can be named safely.
-		if msg.Bell && msg.WindowID != "" {
-			m.noteWindowBell(msg.WindowID)
+		if msg.Bell {
+			if msg.WindowID != "" {
+				m.noteWindowBell(msg.WindowID)
+			}
+			if !m.ringBell() {
+				return m, ListenForNotification(m.PendingNotification)
+			}
 		}
 		if msg.WindowID != "" {
 			m.ShowNotificationFrom(msg.Message, msg.Type, msg.Duration,
@@ -1542,8 +1574,20 @@ func (m *OS) handleMsg(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 		return m, tea.Batch(cmd, ListenForCwdChange(m.PendingCwdChange))
 
 	case fileDirChangedMsg:
-		// The listed folder changed on disk. See sidebar_files_watch.go.
-		return m, tea.Batch(m.refreshChangedFolder(), listenForFileChange(m.fileWatchChan(), msg.at))
+		// The listed folder, or a folder open in the tree, changed on disk.
+		// See sidebar_files_watch.go. A change that names nothing is the
+		// root's: a daemon push and an older watch say only that.
+		root, dirs := m.fileWatch.takeDirty()
+		cmd := m.refreshChangedTree(dirs, root)
+		if root || len(dirs) == 0 {
+			cmd = tea.Batch(m.refreshChangedFolder(), cmd)
+		}
+		return m, tea.Batch(cmd, listenForFileChange(m.fileWatchChan(), msg.at))
+	case fileTreeListMsg:
+		// A folder open in the tree, read on its own goroutine.
+		cmd := m.HandleFileTreeList(msg)
+		m.renderSkipped = false
+		return m, cmd
 	case NvimNavigationMsg:
 		m.onNvimNavigation(msg)
 		return m, ListenForNvimNavigation(m.PendingNvimNavigation)
@@ -1585,6 +1629,39 @@ func (m *OS) handleMsg(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 		// clone's worth of minutes. The handler attaches to the session it made,
 		// or says what failed; both touch the model, which is why they run here.
 		return m, m.handleWorktreeCreated(msg)
+
+	case worktreeRemovedMsg:
+		// A worktree removal that finished on its own goroutine. The handler
+		// says what became of it and quits this client when the deleted
+		// session was the one it was attached to; both touch the model, which
+		// is why they run here.
+		return m, m.handleWorktreeRemoved(msg)
+
+	case worktreeTollMsg:
+		// The delete row's toll, fetched after the dialog opened. It only
+		// lands when the same dialog is still open on the same session: one
+		// closed and reopened on another session gets its own fetch.
+		if m.ShowSessionClose && m.SessionCloseWindow == "" && m.SessionCloseWorkspace == 0 &&
+			m.sessionCloseTarget() == msg.Name {
+			t := msg.Toll
+			m.SessionCloseWorktreeToll = &t
+		}
+		return m, nil
+
+	case worktreeRemoveQuitMsg:
+		// The dwell after an attached worktree deletion ran out. The user has
+		// had the whole dwell to switch to another session, so the quit follows
+		// the deleted session by name: still here means QuitSession — the one
+		// quit path, with QuitRequested making the daemon's session-ended
+		// announcement read as the deliberate exit it is — and gone from here
+		// means the ordinary other-session kill, which cannot touch what this
+		// client is in now.
+		if m.SessionName == msg.Name {
+			m.QuitSession()
+			return m, tea.Quit
+		}
+		m.KillOtherSession(msg.Name)
+		return m, nil
 
 	case tapeDebounceMsg:
 		// The focused cwd held still long enough; evaluate it for a project tape.
@@ -1708,6 +1785,9 @@ func (m *OS) handleMsg(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 	case TMLClockMsg:
 		return m, m.handleTMLClock()
 
+	case TMLViewFlushMsg:
+		return m, m.handleTMLViewFlush(msg.id)
+
 	case TMLActionFailedMsg:
 		m.ShowNotification(msg.Text, "warning", m.Settings.NotificationDuration)
 		return m, nil
@@ -1716,6 +1796,14 @@ func (m *OS) handleMsg(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 		// A TML surface was pushed, an answer came back, or a click left a
 		// side effect. See tml.go.
 		return m, m.handleTMLWake()
+
+	case PluginApprovalsMsg:
+		m.setPluginAsks(msg.Asks)
+		return m, nil
+
+	case pluginApprovalDoneMsg:
+		m.pluginApprovalDone(msg)
+		return m, nil
 
 	case PaneMarkMsg:
 		// A pane out of view rang the bell or printed. One push per pane
@@ -1903,37 +1991,29 @@ func (m *OS) handleMsg(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 			cmd = tea.Batch(cmd, saverCmd)
 		}
 
-		// Motion events during a drag or resize arrive far faster than a frame
-		// can be composed: the pointer emits one per cell it crosses, while a
-		// frame costs milliseconds. Rendering every one builds a backlog that
-		// grows for as long as the drag lasts, which is why the layout trails
-		// the pointer instead of merely being a frame behind it.
+		// Motion events arrive far faster than a frame can be composed: the
+		// pointer emits one per cell it crosses, and a terminal on a large
+		// screen reports hundreds a second, while a frame costs milliseconds
+		// and more the wider the screen. bubbletea composes a frame after
+		// every message, so drawing each one builds a backlog that grows for
+		// as long as the pointer moves: the drag trails the pointer, and hover
+		// over a panel or the rail lags it by seconds (issue #1058).
 		//
-		// Only the redundant intermediate frames are dropped, never the input.
-		// The handler above has already applied this event's geometry, so the
-		// model always reflects the newest pointer position; skipping the draw
-		// just means the next draw shows a later position. The interaction tick
-		// forces a render while InteractionMode is set, so a skipped motion is
-		// always flushed within one tick, and mouse release is not a motion
-		// event so the final position is drawn unconditionally.
-		// The mouse-anchored spotlight is throttled for the same reason a drag
-		// is: the beam moves with the pointer, so every motion event makes the
-		// frame differ from the last one and the compose stops being thrown
-		// away. Without this a fast swipe composes once per cell crossed.
-		beamFollowsMouse := m.spotlight.on &&
-			m.spotlightConfig().FollowMode() == config.SpotlightFollowMouse
-		if _, isMotion := msg.(tea.MouseMotionMsg); isMotion && (m.InteractionMode || beamFollowsMouse) {
+		// So motion draws at most once per frame period. Only the redundant
+		// intermediate frames are dropped, never the input: the handler above
+		// has applied this event, so the model always holds the newest pointer
+		// position, and the next frame shows it. A skipped move sets
+		// pointerMotionPending, which wakes the maintenance tick for the end of
+		// the frame period (see nextWake) and draws the last position the
+		// pointer reached. A pointer at rest never sets it, so the idle tick
+		// stays idle. A press, a release or a key is not motion and draws at
+		// once. The period runs from the end of the last frame, written: see
+		// motionBudgetFrom.
+		if _, isMotion := msg.(tea.MouseMotionMsg); isMotion {
 			now := time.Now()
-			if now.Sub(m.lastInteractionRender) < time.Second/time.Duration(m.Settings.NormalFPS) {
+			if now.Sub(m.motionBudgetFrom()) < m.framePeriod() {
 				m.renderSkipped = true
-				// A drag has the interaction tick to flush the position it
-				// skipped. A beam following the pointer has no tick of its own,
-				// and adding one would cost every idle client a wake-up for a
-				// setting it is not using. This flag is the flush instead: it
-				// is true only between a skipped move and the next frame, so a
-				// client with the beam off, or with the pointer at rest, never
-				// sees it and the idle tick stays idle.
-				m.spotlightMotionPending = beamFollowsMouse
+				m.pointerMotionPending = true
 			} else {
 				m.lastInteractionRender = now
 			}
@@ -2173,6 +2253,7 @@ func (m *OS) handleMsg(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 			oldWindowCount := m.windowCountForNotice()
 			oldWorkspace := m.CurrentWorkspace
 			oldWindows := m.windowLabelsForNotice()
+			oldMade := m.panesMadeForNotice()
 
 			if err := m.ApplyStateSyncFrom(msg.State, msg.SourceID); err != nil {
 				m.LogError("Failed to apply state sync: %v", err)
@@ -2189,6 +2270,7 @@ func (m *OS) handleMsg(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 
 				// Show notifications for significant changes
 				newWindowCount := m.windowCountForNotice()
+				newMade := m.panesMadeForNotice()
 				newWorkspace := m.CurrentWorkspace
 
 				// Window count change notification. A window that moved to
@@ -2196,6 +2278,9 @@ func (m *OS) handleMsg(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 				// not made.
 				if note, ok := m.windowMoveNotice(msg.State, oldWindows); ok {
 					m.ShowNotification(note, "info", 2*time.Second)
+				} else if newMade == oldMade {
+					// Only TML surfaces came or went. A program put them on
+					// the screen, and the person did not make a window.
 				} else if newWindowCount > oldWindowCount {
 					m.ShowNotification(fmt.Sprintf("Window created (%d total)", newWindowCount), "info", 2*time.Second)
 				} else if newWindowCount < oldWindowCount {
@@ -2247,6 +2332,9 @@ func (m *OS) handleMsg(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 	case PasteBufferDeletedMsg:
 		m.handlePasteBufferDeleted(msg)
 		return m, nil
+
+	case WorkspaceRenumberedMsg:
+		return m, m.handleWorkspaceRenumbered(msg)
 
 	case RenameAppliedMsg:
 		if msg.Err != nil {
@@ -2376,6 +2464,16 @@ func (m *OS) handleMsg(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 
 	case replyEditorDoneMsg:
 		return m, m.applyReplyEditorDone(msg)
+
+	case scrollbackFileMsg:
+		return m, m.openScrollbackEditor(msg)
+
+	case scrollbackEditorDoneMsg:
+		return m, m.applyScrollbackEditorDone(msg)
+
+	case clearScrollbackDoneMsg:
+		m.applyClearScrollbackDone(msg)
+		return m, nil
 
 	case ReviewDiffMsg:
 		m.applyReviewDiff(msg)

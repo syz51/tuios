@@ -1,4 +1,4 @@
-// Ported from pele src/diagrams/radar/render.ts at 8fad23bd51783e4df1204e177a7fb0d2a30dcd13.
+// Ported from pele src/diagrams/radar/render.ts at 4eff76f98c73b6817800a05773517f35832e4e92.
 
 package radar
 
@@ -31,7 +31,12 @@ func option(config types.Config, key string, fallback, min, max float64) float64
 
 func relativeRadius(value, min, max, radius float64) float64 {
 	clipped := math.Min(math.Max(value, min), max)
-	return (radius * (clipped - min)) / (max - min)
+	scaled := radius * (clipped - min)
+	// Keep the original rounding unless multiplication overflows.
+	if !math.IsInf(scaled, 0) && !math.IsNaN(scaled) {
+		return scaled / (max - min)
+	}
+	return radius * ((clipped - min) / (max - min))
 }
 
 // closedRoundCurve is a closed Catmull-Rom spline through the points, as cubic Bézier segments.

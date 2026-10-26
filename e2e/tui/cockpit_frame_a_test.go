@@ -150,8 +150,10 @@ func startFrameA(t *testing.T, cols, rows int) (*tuitest.Terminal, frameARig) {
 	// One started in the repository's main checkout is the judge
 	// judge-fan starts: it says it is ready, and on its task it reports
 	// the verdict of DESIGN.md frame (g).
+	// Each turns bracketed paste on first, as the real ones do when their
+	// input box is live: a first prompt waits for it.
 	for _, a := range []string{"claude", "codex", "gemini", "opencode", "goose"} {
-		files[a] = "#!/bin/sh\nif [ \"$PWD\" = '" + repo + "' ]; then\n" + frameAJudge + "\nfi\n" +
+		files[a] = "#!/bin/sh\nprintf '\\033[?2004h'\nif [ \"$PWD\" = '" + repo + "' ]; then\n" + frameAJudge + "\nfi\n" +
 			"if [ -n \"$1\" ]; then cat \"$1\"; else echo " + a + " ready; fi\nwhile :; do sleep 900; done\n"
 	}
 	for name, body := range files {
@@ -466,6 +468,15 @@ func TestCockpitFanCompare(t *testing.T) {
 	out, _ := tuiosCLI(t, rig.base, "fan", "verify", "repo-cache", "--", "grep -q sync.RWMutex internal/cache/lru.go")
 	if !strings.Contains(out, "1 of 3 passed") {
 		t.Fatalf("fan verify did not pass B alone:\n%s", out)
+	}
+	// The done reports move the fan from Working to Ready for review. The
+	// row is clicked where it ends up: on a slow runner the click once
+	// landed on the row the fan had left.
+	if err := term.WaitFor(func(s tuitest.Screen) bool {
+		ready, fan, working := fleetRowWith(s, "Ready for review"), fleetRowWith(s, "fan of 3"), fleetRowWith(s, "Working")
+		return ready >= 0 && fan > ready && (working < 0 || fan < working) && fleetRowWith(s, "cache-2") == fan+3
+	}, uiTimeout); err != nil {
+		t.Fatalf("the fan never moved to Ready for review: %v\n%s", err, term.Snapshot())
 	}
 	row, col := findText(t, term, "cache-2")
 	mouseClick(t, term, col, row, tuitest.MouseLeft, 0)

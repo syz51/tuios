@@ -1,4 +1,4 @@
-// Ported from pele src/diagrams/usecase/parser.ts at 8fad23bd51783e4df1204e177a7fb0d2a30dcd13.
+// Ported from pele src/diagrams/usecase/parser.ts at 4eff76f98c73b6817800a05773517f35832e4e92.
 
 package usecase
 
@@ -115,10 +115,7 @@ func (ps *parser) span(k int) Span { return Span{ps.starts[k], ps.ends[k]} }
 
 func (ps *parser) fail(detail string) {
 	line, column := lineColumn(ps.src, ps.starts[ps.p])
-	from := units(ps.src, 0, ps.starts[ps.p])
-	to := from + units(ps.src, ps.starts[ps.p], ps.ends[ps.p])
-	panic(types.NewPeleError("Error parsing usecase diagram: "+detail+" at line "+strconv.Itoa(line)+", column "+strconv.Itoa(column)+
-		" ["+strconv.Itoa(from)+","+strconv.Itoa(to)+")", types.CodeSyntax, types.ErrorInfo{Type: "usecase", Line: line, Column: column}))
+	panic(types.NewPeleError("Error parsing usecase diagram: "+detail+" at "+locationText(ps.src, ps.starts[ps.p], ps.ends[ps.p]), types.CodeSyntax, types.ErrorInfo{Type: "usecase", Line: line, Column: column}))
 }
 
 func (ps *parser) mismatch(name string) {

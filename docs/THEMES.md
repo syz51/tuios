@@ -76,6 +76,9 @@ instead. Enter applies the theme. The glyph picker works the same way.
 chrome uses the Charple accent. See
 [CharmTone themes](CONFIGURATION.md#charmtone-themes).
 
+`gilt` is a dark theme of cool obsidian, warm parchment and gold. Its chrome
+accent is gold.
+
 Leaving the theme unset disables theming entirely and TUIOS uses your terminal's
 own colors. An unknown theme name logs a warning and leaves the colors as they
 were, rather than failing to start.
@@ -431,12 +434,17 @@ close = "x"
 - A look file is 64 KiB at most. A theme or a glyph set in it is 32 KiB at
   most.
 
-tuios writes the look to `config.d/look.toml` and does not change
-`config.toml`. `config.toml` wins over `config.d`, so a key that
-`config.toml` sets hides the same key in the look. `tuios look apply` names
-those keys. When you change a look key in the settings, tuios writes the
-change to `config.toml`. The next `tuios look apply` or `tuios look remove`
-then keeps your change.
+tuios writes the look to `config.d/look.toml`. `config.toml` wins over
+`config.d`, so a key that `config.toml` sets hides the same key in the look.
+`tuios look apply` names those keys and asks if the look can set them. A yes
+is a take-over: tuios removes the keys from `config.toml`, and from a later
+`config.d` file, and saves your values. `--take-over` answers yes.
+`tuios look remove` puts your values back. A file that you did not change
+since goes back byte for byte.
+
+When you change a look key in the settings, tuios writes the change to
+`config.toml`. The next `tuios look apply` or `tuios look remove` then keeps
+your change.
 
 tuios does not replace or delete a file of your own. If `config.d/look.toml`
 is a file that tuios did not write, `tuios look` stops. It also stops if a
@@ -564,7 +572,8 @@ by surface. Each one you leave out draws as before:
   [CONFIGURATION.md](CONFIGURATION.md).
 - `appearance.border_unfocused_color` in the config wins over
   `border.unfocused`. `appearance.border_focused_color` wins over the focused
-  border's colours by state.
+  border's colours by state. The keys for one mode,
+  `border_focused_color_window` and `border_focused_color_terminal`, do not.
 - In a config colour, write a role by its full name, such as
   `fg = "status.attention"`.
 - At 16 colours these fields are not used. Each piece uses its slot, as before.
@@ -694,9 +703,10 @@ pointer are underlined.
   are loaded; subdirectories are ignored.
 - **No validation beyond parsing.** A syntactically valid file with meaningless
   colors loads happily. Use `tuios --preview-theme <id>` to check the result.
-- **Border color overrides are separate.** `border_focused_color` and
+- **Border color overrides are separate.** `border_focused_color`,
+  `border_focused_color_window`, `border_focused_color_terminal` and
   `border_unfocused_color` in `[appearance]` override the theme's border colors
-  and are not part of the theme file. Both rows in the settings page open a
+  and are not part of the theme file. Each row in the settings page open a
   colour picker, seeded on the colour the border is currently drawn in; clearing
   one there unsets the override and hands the border back to the theme.
 - **The chrome's neutrals do not follow the sixteen.** Dialogs and the

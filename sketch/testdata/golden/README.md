@@ -11,7 +11,7 @@ the Mermaid contributors. pele is under the MIT licence, copyright kepano.
 the commit that the port follows:
 
 ```sh
-cd pele && git checkout 8fad23bd51783e4df1204e177a7fb0d2a30dcd13
+cd pele && git checkout 4eff76f98c73b6817800a05773517f35832e4e92
 npm ci && npm run build
 node /path/to/sketch/testdata/golden/gen.mjs /path/to/pele /path/to/sketch/testdata/golden
 ```
@@ -34,7 +34,7 @@ To write the gantt goldens again, run `gen.mjs` with `TZ=Asia/Dubai`.
 ## Extra cases
 
 `testdata/extra` holds cases that the corpus does not cover. Each JSON file is
-a list of `{"src": ..., "maxWidth": ..., "math": true}`, and `golden/` holds pele's SVG for
+a list of `{"src": ..., "maxWidth": ..., "idPrefix": ..., "autoDirection": ..., "math": true}`, and `golden/` holds pele's SVG for
 each case. `TestGoldenExtra` compares them. To write them again:
 
 ```sh
@@ -44,3 +44,13 @@ TZ=Asia/Dubai node testdata/extra/gen.mjs /path/to/pele testdata/extra/golden
 A case with `"math": true` is drawn with `fakeMath`, the fixed math resolver in
 `gen.mjs`. `TestGoldenExtra` gives the same resolver in Go, `goldenMath`.
 Change both together.
+
+## Errors
+
+`testdata/errors/cases.json` holds sources with errors, and `want.json` holds
+the error pele gives for each. `TestGoldenErrors` compares them. To write them
+again:
+
+```sh
+TZ=Asia/Dubai node testdata/errors/gen.mjs /path/to/pele
+```

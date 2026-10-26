@@ -165,6 +165,10 @@ A worktree with uncommitted changes is refused. Nothing is removed. Run
 again with --stash to keep the changes in git stash, or with --force to
 discard them. --force is the only option that discards work.
 
+A worktree sitting on a detached HEAD that holds commits no branch has is
+refused too: removing it would leave those commits unreachable. --force
+removes them anyway.
+
 The branch is never deleted. Every commit made in the worktree stays in the
 repository.
 
@@ -279,7 +283,7 @@ The branches are a stem, then stem-2, stem-3 and so on. The stem is 'fan/'
 and the first words of the prompt, or --name.
 
 --grants says what every agent may do through tuios: read, write, fan,
-files, respond, admin, or none. Without it they hold the default of
+files, task, respond, admin, or none. Without it they hold the default of
 [agents.permissions]. A fan run from a pane without admin gives them that
 pane's own grants.
 
@@ -355,7 +359,7 @@ pull HOST:SESSION' brings its work here.`,
 	fanCmd.Flags().BoolVar(&fanJSON, "json", false, "Output result as JSON")
 	fanCmd.Flags().StringVar(&fanHost, "host", "", "Run the fan-out on this machine from the [hosts] table")
 	fanCmd.Flags().BoolVar(&fanClone, "clone", false, "With --host, clone the repository there when the host has no checkout")
-	fanCmd.Flags().StringSliceVar(&fanGrants, "grants", nil, "What every agent may do through tuios, comma separated: read, write, fan, files, respond, admin, or none (default: [agents.permissions], or the calling pane's own)")
+	fanCmd.Flags().StringSliceVar(&fanGrants, "grants", nil, "What every agent may do through tuios, comma separated: read, write, fan, files, task, respond, admin, or none (default: [agents.permissions], or the calling pane's own)")
 	_ = fanCmd.RegisterFlagCompletionFunc("host", completeConfiguredHosts)
 	_ = fanCmd.RegisterFlagCompletionFunc("grants", completeGrantNames)
 	_ = fanCmd.MarkFlagRequired("agent")
@@ -651,6 +655,7 @@ type removedWorktree struct {
 	Branch        string `json:"branch"`
 	Path          string `json:"path"`
 	Changes       int    `json:"changes"`
+	Ignored       int    `json:"ignored"`
 	Stashed       bool   `json:"stashed"`
 	StashMessage  string `json:"stash_message"`
 	Discarded     bool   `json:"discarded"`
@@ -672,6 +677,11 @@ func (r removedWorktree) sentences() string {
 		fmt.Fprintf(&b, "%d uncommitted %s %s in git stash as '%s'.\n", r.Changes, plural.Word(r.Changes, "change", "changes"), plural.Word(r.Changes, "is", "are"), r.StashMessage)
 	case r.Discarded:
 		fmt.Fprintf(&b, "%d uncommitted %s %s discarded.\n", r.Changes, plural.Word(r.Changes, "change", "changes"), plural.Word(r.Changes, "was", "were"))
+	}
+	if r.Ignored > 0 {
+		// The part nothing saves: git never stashes ignored files, and the
+		// removal deleted them without --force.
+		fmt.Fprintf(&b, "%d ignored %s deleted, and git never stashes ignored files.\n", r.Ignored, plural.Word(r.Ignored, "file was", "files were"))
 	}
 	if r.SessionKilled {
 		fmt.Fprintf(&b, "Killed session '%s'.", r.Session)

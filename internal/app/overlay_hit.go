@@ -1,10 +1,11 @@
 package app
 
 import (
+	"slices"
+
 	"charm.land/lipgloss/v2"
 	"github.com/Gaurav-Gosain/tuios/internal/config"
 	"github.com/Gaurav-Gosain/tuios/internal/overlay"
-	"slices"
 )
 
 // overlayRowHit is a single interactive body row of an overlay panel, in
@@ -42,7 +43,7 @@ type overlayPanelHit struct {
 // row opens each of them over the panel too. The guard against a fourth is
 // TestEveryOverlayKindHasAPlaceInTheStack, which reads eachOverlayGate itself
 // rather than a second copy of this list.
-var overlayKindOrder = []string{"help", "palette", "launcher", "session", "navigator", "agentmail", "inbox", "workspace", overlayKindBuffers, overlayKindTransfers, "layout", "hostpicker", "aggregate", "settings", "keybinds", "themepicker", "themeeditor", "presetpicker", "glyphpicker", "effectpicker", "dockeditor", "sectioneditor", "accent", "screenshot", "quit", "sessionclose", overlayKindRestart, "filedialog", overlayKindCopyDialog, "worktreeprompt", overlayKindLogs, overlayKindMessage}
+var overlayKindOrder = []string{"help", "palette", "launcher", "session", "goto", "navigator", "agentmail", "inbox", "workspace", overlayKindBuffers, overlayKindTransfers, "layout", "hostpicker", "aggregate", "settings", "keybinds", "themepicker", "themeeditor", "presetpicker", "glyphpicker", "effectpicker", "dockeditor", "sectioneditor", "accent", "screenshot", "quit", "sessionclose", overlayKindRestart, "filedialog", overlayKindCopyDialog, "worktreeprompt", overlayKindPluginApproval, overlayKindLogs, overlayKindMessage}
 
 // overlayGate pairs a draggable overlay kind with whether it is shown.
 type overlayGate struct {
@@ -63,6 +64,7 @@ func (m *OS) eachOverlayGate(yield func(kind string, open bool) bool) {
 		{"palette", m.ShowCommandPalette},
 		{"launcher", m.ShowLauncher},
 		{"session", m.ShowSessionSwitcher},
+		{"goto", m.gotoPicker.open},
 		{"agentmail", m.ShowAgentMail},
 		{"inbox", m.ShowInbox},
 		{"workspace", m.ShowWorkspaceSwitcher},
@@ -88,6 +90,7 @@ func (m *OS) eachOverlayGate(yield func(kind string, open bool) bool) {
 		{"filedialog", m.FilePromptOpen()},
 		{overlayKindCopyDialog, m.CopyDialogOpen()},
 		{"worktreeprompt", m.WorktreePromptOpen()},
+		{overlayKindPluginApproval, m.PluginApprovalOpen()},
 		{overlayKindLogs, m.ShowLogs},
 		{overlayKindMessage, m.msgView.open},
 	}
@@ -331,8 +334,19 @@ func (m *OS) centeredBoxLayer(box string, z int, id string) *lipgloss.Layer {
 	return lipgloss.NewLayer(box).X(x).Y(y).Z(z).ID(id)
 }
 
-// syncOverlayASCII mirrors the ASCII-only setting into the overlay package,
-// which has no dependency on tuios config.
-func syncOverlayASCII(s *config.Settings) {
+// syncOverlaySettings mirrors the settings the overlay family draws by into
+// that package, which has no dependency on tuios config: ASCII mode, the frame
+// glyphs border_style resolves to, and frame_panels. It runs every frame, so a
+// border style set by a flag, a tape or the settings page reaches the dialogs
+// as surely as one set in the config file.
+func syncOverlaySettings(s *config.Settings) {
 	overlay.SetASCII(s.UseASCIIOnly)
+	overlay.SetNerdFonts(!s.NerdFontsOff())
+	b := s.OverlayBorder()
+	overlay.SetFrame(overlay.Frame{
+		TopLeft: b.TopLeft, TopRight: b.TopRight,
+		BottomLeft: b.BottomLeft, BottomRight: b.BottomRight,
+		Horizontal: b.Top, Vertical: b.Left,
+	})
+	overlay.SetFramePanels(s.FramePanels)
 }

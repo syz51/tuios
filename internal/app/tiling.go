@@ -214,7 +214,9 @@ func (m *OS) tileAllWindows() {
 				// first; this branch did not, so a mode switch away from a
 				// scrolling layout mid-slide left the pane drawing at one size
 				// and its guest writing at another.
-				m.CancelSnapAnimation(visibleWindows[i])
+				if dur <= 0 {
+					m.CancelSnapAnimation(visibleWindows[i])
+				}
 
 				if dur > 0 {
 					rect := layout.Rect{X: l.X, Y: l.Y, W: l.Width, H: l.Height}
@@ -223,6 +225,7 @@ func (m *OS) tileAllWindows() {
 					// was parked, so it grows into place. See openStartRect.
 					if opening[visibleWindows[i].ID] {
 						if x, y, w, h := openStartRect(rect); w != rect.W || h != rect.H {
+							m.CancelSnapAnimation(visibleWindows[i])
 							// Assigned, not resized: the emulator keeps the size
 							// the pane was created at for the length of the
 							// animation, the way every other frame of a snap
@@ -236,8 +239,7 @@ func (m *OS) tileAllWindows() {
 					// settles it before the placement: the allowance decides how
 					// much of the rectangle the guest gets.
 					visibleWindows[i].Tiled = m.panesBorderless()
-					if anim := m.newSnapAnimation(visibleWindows[i], rect.X, rect.Y, rect.W, rect.H, dur); anim != nil {
-						m.Animations = append(m.Animations, anim)
+					if anim := m.animateWindow(visibleWindows[i], rect.X, rect.Y, rect.W, rect.H, dur); anim != nil {
 						visibleWindows[i].InvalidateCache()
 						continue
 					}
@@ -554,6 +556,21 @@ func (m *OS) SaveCurrentLayout() {
 
 // RestoreWorkspaceLayout restores saved layout when switching to a workspace
 func (m *OS) RestoreWorkspaceLayout(workspace int) {
+	// The layout mode is per workspace. A workspace that chose a layout goes
+	// back to it on every visit; one that never chose follows the mode the
+	// session was created with, which adoptSessionLayoutMode records for the
+	// workspaces a session brought with it. Only a session with no state at all
+	// falls back to [startup] layout, which is this client's own default for a
+	// session of its own. The retile that follows the switch is what puts the
+	// mode on screen, so this only sets the flags.
+	if name, ok := m.WorkspaceLayoutMode[workspace]; ok {
+		m.ApplyLayoutModeName(name)
+	} else if m.sessionLayoutMode != "" {
+		m.ApplyLayoutModeName(m.sessionLayoutMode)
+	} else if m.UserConfig != nil && m.UserConfig.Startup.Layout != "" {
+		m.ApplyLayoutModeName(m.UserConfig.Startup.Layout)
+	}
+
 	if !m.AutoTiling {
 		return
 	}

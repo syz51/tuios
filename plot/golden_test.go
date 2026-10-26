@@ -87,7 +87,7 @@ var cases = []chartCase{
 	}},
 	{"histogram", 24, 5, func(w, h int, m Mode) *Grid {
 		var vals []float64
-		for i := 0; i < 200; i++ {
+		for i := range 200 {
 			vals = append(vals, 10+20*math.Exp(-float64((i%40-12)*(i%40-12))/60)+float64(i%7))
 		}
 		return Histogram{Values: vals, Bins: 12, Format: func(v float64) string { return Compact(v) + "ms" }}.Draw(w, h, m)
@@ -98,7 +98,7 @@ var cases = []chartCase{
 	}},
 	{"heatmap-half", 16, 3, func(w, h int, m Mode) *Grid {
 		var rows [][]float64
-		for r := 0; r < 6; r++ {
+		for r := range 6 {
 			rows = append(rows, []float64{float64(r), float64(r * 2), float64(10 - r)})
 		}
 		return Heatmap{Values: rows}.Draw(w, h, m)
@@ -111,6 +111,24 @@ var cases = []chartCase{
 	}},
 	{"pie-seven", 40, 8, func(w, h int, m Mode) *Grid {
 		return Pie{Values: []float64{412, 236, 188, 164, 121, 74, 52}, Labels: []string{"e2e", "ghostty", "unit", "fuzz", "release", "wasm", "lint"}}.Draw(w, h, m)
+	}},
+	{"radar", 40, 13, func(w, h int, m Mode) *Grid {
+		return Radar{Axes: []string{"speed", "power", "range", "cost", "weight"}, Series: []Series{{Name: "car", Values: []float64{4, 2, 3, 5, 3}}, {Name: "bike", Values: []float64{2, 1, 5, 1, 1}}}, Max: 5, Rings: 5, Polygon: true}.Draw(w, h, m)
+	}},
+	{"span", 20, 1, func(w, h int, m Mode) *Grid {
+		return Span{Start: 3, End: 7.5, Min: 0, Max: 10, Fill: "▒", Role: Info}.Draw(w, m)
+	}},
+	{"treemap", 44, 12, func(w, h int, m Mode) *Grid {
+		return TreemapOf([]TreeItem{
+			{Label: "app", Children: []TreeItem{{Label: "render", Value: 40}, {Label: "input", Value: 20}}},
+			{Label: "daemon", Children: []TreeItem{{Label: "session", Value: 30}, {Label: "cli", Value: 10}}},
+		}, nil).Draw(w, h, m)
+	}},
+	{"bar-half", 12, 5, func(w, h int, m Mode) *Grid {
+		return Bar{Values: []float64{1, 0.5, 0.1, 0.75}, Min: 0, Max: 1, Half: true}.Draw(w, h, m)
+	}},
+	{"bar-h-half", 12, 4, func(w, h int, m Mode) *Grid {
+		return Bar{Values: []float64{1, 0.5, 0.1, 0.75}, Min: 0, Max: 1, Half: true, Horizontal: true, Format: func(float64) string { return "" }}.Draw(w, h, m)
 	}},
 	{"bar-v-axis", 40, 8, func(w, h int, m Mode) *Grid {
 		return Bar{Values: runSecs, Labels: []string{"30 ago"}, Axis: true, Role: Info}.Draw(w, h, m)
@@ -311,7 +329,8 @@ func dump(g *Grid) string {
 	}
 	sort.Strings(legend)
 	if len(legend) > 0 {
-		b.WriteString(strings.Join(legend, " ") + " (upper case is bold)\n")
+		b.WriteString(strings.Join(legend, " "))
+		b.WriteString(" (upper case is bold)\n")
 	}
 	return b.String()
 }

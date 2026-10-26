@@ -18,11 +18,28 @@ package childproc
 import (
 	"context"
 	"os/exec"
+	"path/filepath"
+	"strings"
 )
+
+// gitArgs puts the settings every git the daemon runs gets in front of args.
+//
+// A repository's own config can name programs git runs: core.fsmonitor runs
+// one on every status and diff. The daemon runs git in folders a pane
+// controls, and a program git starts runs outside every pane, so a pane could
+// get code run as a child of the daemon. core.fsmonitor only speeds git up,
+// so it is off.
+func gitArgs(name string, args []string) []string {
+	// A path to git is git too, here or in a later caller.
+	if base := strings.TrimSuffix(filepath.Base(name), ".exe"); base != "git" {
+		return args
+	}
+	return append([]string{"-c", "core.fsmonitor=false"}, args...)
+}
 
 // Command is exec.Command for a program that must not open a window.
 func Command(name string, args ...string) *exec.Cmd {
-	cmd := exec.Command(name, args...) //tuios:allow-exec the one place that hides it
+	cmd := exec.Command(name, gitArgs(name, args)...) //tuios:allow-exec the one place that hides it
 	Hide(cmd)
 	return cmd
 }
@@ -30,7 +47,7 @@ func Command(name string, args ...string) *exec.Cmd {
 // CommandContext is exec.CommandContext for a program that must not open a
 // window.
 func CommandContext(ctx context.Context, name string, args ...string) *exec.Cmd {
-	cmd := exec.CommandContext(ctx, name, args...) //tuios:allow-exec the one place that hides it
+	cmd := exec.CommandContext(ctx, name, gitArgs(name, args)...) //tuios:allow-exec the one place that hides it
 	Hide(cmd)
 	return cmd
 }

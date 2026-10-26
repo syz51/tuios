@@ -397,6 +397,10 @@ var notTerminalSections = map[string]string{
 	// action NoteAction could record. TestListKeysFromConfigMoveTheCommandPalette
 	// presses them through the real entry point.
 	"lists": "every list overlay, through listKey",
+	// Declared by the user and absent from the default config, so there is no
+	// key to press from here. TestDeclaredMenusNest presses them through the
+	// real entry point.
+	"menus": "user-declared prefix menus, none ship",
 }
 
 // TestReachabilityTableCoversEveryBindingSection stops the table from going
@@ -408,8 +412,7 @@ func TestReachabilityTableCoversEveryBindingSection(t *testing.T) {
 		covered[sec.name] = true
 	}
 	typ := reflect.TypeFor[config.KeybindingsConfig]()
-	for i := range typ.NumField() {
-		f := typ.Field(i)
+	for f := range typ.Fields() {
 		if f.Type.Kind() != reflect.Map {
 			continue
 		}
@@ -502,15 +505,6 @@ var actionsWithNoDefaultBinding = map[string]string{
 	"send_prefix":          "user binding",
 	"move_workspace_left":  "user binding",
 	"move_workspace_right": "user binding",
-	"send_to_workspace_1":  "user binding",
-	"send_to_workspace_2":  "user binding",
-	"send_to_workspace_3":  "user binding",
-	"send_to_workspace_4":  "user binding",
-	"send_to_workspace_5":  "user binding",
-	"send_to_workspace_6":  "user binding",
-	"send_to_workspace_7":  "user binding",
-	"send_to_workspace_8":  "user binding",
-	"send_to_workspace_9":  "user binding",
 	"reload_config":        "user binding",
 	"toggle_mouse":         "user binding",
 	"cycle_layout":         "user binding",
@@ -524,6 +518,9 @@ var actionsWithNoDefaultBinding = map[string]string{
 	// them too.
 	"copy_mode_search_forward":  "user binding and palette row",
 	"copy_mode_search_backward": "user binding and palette row",
+	// cmd+k in other terminals, which the host terminal usually keeps for
+	// itself, so it ships unbound.
+	"clear_scrollback": "user binding and palette row",
 	// Hints on every pane at once. The plain hints key does the same with
 	// hints.all_panes on (issue #248).
 	"hints_all_panes": "user binding and palette row",

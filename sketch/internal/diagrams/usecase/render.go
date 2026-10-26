@@ -1,4 +1,4 @@
-// Ported from pele src/diagrams/usecase/render.ts at 8fad23bd51783e4df1204e177a7fb0d2a30dcd13.
+// Ported from pele src/diagrams/usecase/render.ts at 4eff76f98c73b6817800a05773517f35832e4e92.
 
 package usecase
 
@@ -881,7 +881,7 @@ func geometry(views []View, cnodes []*layout.CNode, width, height float64) *type
 		case kActor:
 			// A stick figure in text, with no box. The room a box would take around the
 			// name is added, so that the actor does not set a coarser scale than a box does.
-			n.Shape = "text"
+			n.Shape = "actor"
 			n.W += 32
 			n.Label = append(append([]string{" o ", "/|\\", "/ \\"}, stereotype...), view.label.Plain()...)
 		case kEllipse:

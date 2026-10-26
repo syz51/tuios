@@ -49,6 +49,17 @@ type exampleOutcome struct {
 // panes, so a verb that needs one of those answers with an error, and that
 // error is the honest expectation rather than a skip.
 var exampleOutcomes = map[string]exampleOutcome{
+	// The fixture's session is made fresh for each example and holds no
+	// task card. The verbs are proved in task_test.go.
+	"block-task#0":     {errCode: ErrVerbNoTask, why: "the fixture's session holds no task card"},
+	"block-task#1":     {errCode: ErrVerbNoTask, why: "the fixture's session holds no task card"},
+	"claim-task#0":     {errCode: ErrVerbNoTask, why: "the fixture's session holds no task card"},
+	"claim-task#1":     {errCode: ErrVerbNoTask, why: "the fixture's session holds no task card"},
+	"finish-task#0":    {errCode: ErrVerbNoTask, why: "the fixture's session holds no task card"},
+	"get-task#0":       {errCode: ErrVerbNoTask, why: "the fixture's session holds no task card"},
+	"release-task#0":   {errCode: ErrVerbNoTask, why: "the fixture's session holds no task card"},
+	"remove-task#0":    {errCode: ErrVerbNoTask, why: "the fixture's session holds no task card"},
+	"set-task-stage#0": {errCode: ErrVerbNoTask, why: "the fixture's session holds no task card"},
 	// A client-owned surface with no client attached.
 	"list-dock-components#0": {errCode: ErrVerbNeedsClient, why: "the dock is drawn by a client"},
 	// The fixture daemon reads no config file. The verb is proved in
@@ -72,6 +83,7 @@ var exampleOutcomes = map[string]exampleOutcome{
 	"tml-patch#0":            {errCode: ErrVerbNoSurface, why: "the example names a surface the fixture never opened"},
 	"tml-replace#0":          {errCode: ErrVerbNoSurface, why: "the example names a surface the fixture never opened"},
 	"tml-get#0":              {errCode: ErrVerbNoSurface, why: "the example names a surface the fixture never opened"},
+	"tml-place#0":            {errCode: ErrVerbNoSurface, why: "the example names a surface the fixture never opened"},
 	"popup#1":                {errCode: ErrVerbNeedsClient, why: "a popup is a client window"},
 	"popup#2":                {errCode: ErrVerbNeedsClient, why: "a popup is a client window"},
 	// The question waits for an answer nobody in the fixture gives, and the
@@ -128,7 +140,8 @@ var exampleOutcomes = map[string]exampleOutcome{
 	"close-pane#0":  {errCode: ErrVerbUnknownPane, why: "the example's pane id is a literal, not one this daemon handed out"},
 	// paste-pane-image names a hosted pane by the same literal. The paste
 	// itself is proved in paste_image_test.go.
-	"paste-pane-image#0": {errCode: ErrVerbUnknownPane, why: "the example's pane id is a literal, not one this daemon handed out"},
+	"paste-pane-image#0":  {errCode: ErrVerbUnknownPane, why: "the example's pane id is a literal, not one this daemon handed out"},
+	"pane-kitty-medium#0": {errCode: ErrVerbUnknownPane, why: "the example's pane id is a literal, not one this daemon handed out"},
 	// paste-image is the person's act and needs a nonce no client here was
 	// issued. The allowed path is proved in paste_image_test.go.
 	"paste-image#0": {errCode: ErrVerbNotHuman, why: "the example's nonce is a placeholder, and no client here holds one"},
@@ -228,6 +241,7 @@ var exampleOutcomes = map[string]exampleOutcome{
 	"wait-for#4": {blocks: true, why: "no pane in any session reports an agent state"},
 	"wait-for#5": {blocks: true, why: "no shell in the fixture marks its commands"},
 	"wait-for#6": {blocks: true, why: "no pane matches the selector, so every pane matching can never hold"},
+	"wait-for#7": {blocks: true, why: "no pane prints \"BUILD OK\" after the wait starts"},
 
 	// The fixture's shells are not the fake integrated shell, so no pane marks
 	// its commands. run waits a moment for a first prompt before it says so.

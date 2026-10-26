@@ -2,8 +2,10 @@ package loom
 
 import (
 	"image"
+	"slices"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"tuios.dev/tml"
 )
@@ -56,6 +58,8 @@ func focusable(s *Surface, b *box) bool {
 		return !w.disabled
 	case *scrollWidget:
 		return w.over
+	case *fieldWidget:
+		return w.editable()
 	}
 	return len(s.actionsOf(b.src, "on-press")) > 0 && b.kind != "tml"
 }
@@ -68,11 +72,19 @@ func (s *Surface) Focus() string {
 	return s.view.Focus
 }
 
-// defaultFocus is the first table or list, else the first focusable box.
+// defaultFocus is the first table or list, else the first focusable box
+// that is not a text field. A text field takes the focus only from tab or a
+// click: with it focused a letter types, so a document whose buttons have
+// keys keeps them until the person goes into the field.
 func (s *Surface) defaultFocus() *box {
 	for _, b := range s.focus {
 		switch b.w.(type) {
 		case *tableWidget, *listWidget:
+			return b
+		}
+	}
+	for _, b := range s.focus {
+		if w, ok := b.w.(*fieldWidget); !ok || !w.editable() {
 			return b
 		}
 	}
@@ -106,16 +118,24 @@ func (s *Surface) setFocus(b *box) {
 
 // Key handles a key press, named as tuios names keys: up, down, enter,
 // tab, shift+tab, esc, r, ctrl+b. A button whose key matches takes it
-// first, then the focused node, then the root's on-key. Local actions run
+// first, then the focused node, then the page when the document does not
+// fit (see page.go), then the root's on-key. Local actions run
 // at once; actions for the owner and the host come back as Effects.
 func (s *Surface) Key(key string) (Result, error) {
 	if s.root == nil {
 		return Result{}, nil
 	}
 	s.flush()
+	// A text field with the focus takes the keys that type and edit before
+	// a button's key, so a letter goes into the field.
+	if b, w := s.textField(); b != nil {
+		if res, ok, err := s.fieldKey(b, w, key); ok || err != nil {
+			return res, err
+		}
+	}
 	for _, b := range s.focus {
 		if bw, ok := b.w.(*buttonWidget); ok && bw.key != "" && strings.EqualFold(bw.key, key) && !bw.disabled && visible(b) {
-			return s.run(b, bw.press, nil)
+			return s.press(b, bw.press)
 		}
 	}
 	switch key {
@@ -141,8 +161,15 @@ func (s *Surface) Key(key string) (Result, error) {
 	}
 	if b := s.focused(); b != nil {
 		if res, ok, err := s.keyOn(b, key); ok || err != nil {
+			if pw := s.pageOf(); pw != nil && pw.over && res.View {
+				s.reveal, s.relayout = true, true
+			}
 			return res, err
 		}
+	}
+	// A key the focused box did not use scrolls a page that does not fit.
+	if s.pageKey(key) {
+		return Result{View: true}, nil
 	}
 	if acts := s.actionsOf(s.doc, "on-key"); len(acts) > 0 {
 		return s.run(s.root, acts, map[string]any{"key": key})
@@ -207,7 +234,7 @@ func (s *Surface) keyOn(b *box, key string) (Result, bool, error) {
 		}
 	case *buttonWidget:
 		if press {
-			res, err := s.run(b, w.press, nil)
+			res, err := s.press(b, w.press)
 			return res, true, err
 		}
 	}
@@ -354,14 +381,31 @@ func (s *Surface) Mouse(m Mouse) (Result, error) {
 		if m.Button == WheelUp {
 			key = "up"
 		}
-		for i := len(path) - 1; i >= 0; i-- {
-			switch path[i].w.(type) {
+		for _, p := range slices.Backward(path) {
+			switch p.w.(type) {
 			case *tableWidget, *scrollWidget:
 				for range 3 {
-					s.scrollBy(path[i], key)
+					s.scrollBy(p, key)
 				}
 				return Result{View: true}, nil
+			case *mermaidWidget:
+				// A diagram that fits leaves the wheel to the page.
+				if w := p.w.(*mermaidWidget); w.over {
+					for range 3 {
+						s.scrollBy(p, key)
+					}
+					return Result{View: true}, nil
+				}
 			}
+		}
+		// Over anything else, the wheel scrolls a page that does not fit.
+		if pw := s.pageOf(); pw != nil && pw.over {
+			d := 3
+			if m.Button == WheelUp {
+				d = -3
+			}
+			s.scrollPage(s.view.Page + d)
+			return Result{View: true}, nil
 		}
 		return Result{}, nil
 	}
@@ -373,8 +417,7 @@ func (s *Surface) Mouse(m Mouse) (Result, error) {
 		// as an effect, never as an OSC 8 link the outer terminal follows.
 		return Result{Effects: []Effect{{Action: "link", Name: href, Value: href, HasValue: true}}}, nil
 	}
-	for i := len(path) - 1; i >= 0; i-- {
-		b := path[i]
+	for _, b := range slices.Backward(path) {
 		if b.kind == "split" && s.onDivider(b, pt) {
 			s.drag = b
 			return Result{}, nil
@@ -389,7 +432,7 @@ func (s *Surface) Mouse(m Mouse) (Result, error) {
 	return Result{}, nil
 }
 
-// scrollBy moves a table's view or a scroll box by one row.
+// scrollBy moves a table's view, a scroll box or a diagram by one row.
 func (s *Surface) scrollBy(b *box, key string) {
 	d := 1
 	if key == "up" {
@@ -407,6 +450,9 @@ func (s *Surface) scrollBy(b *box, key string) {
 		}
 	case *scrollWidget:
 		s.view.Scroll[b.key] = max(w.offset(s, b)+d, 0)
+	case *mermaidWidget:
+		off, _ := lookup(s.view.Scroll, b)
+		s.view.Scroll[b.key] = clampInt(off+d, 0, max(w.content-w.view, 0))
 	}
 	s.markView(b.key)
 }
@@ -461,8 +507,14 @@ func (s *Surface) clickOn(b *box, pt image.Point) (Result, bool, error) {
 		}
 	case *buttonWidget:
 		if !w.disabled {
-			res, err := s.run(b, w.press, nil)
+			res, err := s.press(b, w.press)
 			return res, true, err
+		}
+	case *fieldWidget:
+		if w.editable() {
+			// The click puts the caret at the end of the text; the focus
+			// follows (Mouse).
+			return s.moveCaret(b, w, utf8.RuneCountInString(w.value)), true, nil
 		}
 	}
 	if acts := s.actionsOf(b.src, "on-press"); len(acts) > 0 && b.kind != "tml" {
@@ -485,11 +537,11 @@ func (s *Surface) hit(b *box, pt image.Point, path []*box) []*box {
 		return path
 	}
 	var top []*box
-	for i := len(b.kids) - 1; i >= 0; i-- {
-		if !pt.In(b.kids[i].rect) {
+	for _, v := range slices.Backward(b.kids) {
+		if !pt.In(v.rect) {
 			continue
 		}
-		sub := s.hit(b.kids[i], pt, path)
+		sub := s.hit(v, pt, path)
 		if b.kind != "stack" {
 			return sub
 		}
@@ -498,10 +550,8 @@ func (s *Surface) hit(b *box, pt image.Point, path []*box) []*box {
 		if top == nil {
 			top = sub
 		}
-		for _, x := range sub[len(path):] {
-			if s.clickable(x) {
-				return sub
-			}
+		if slices.ContainsFunc(sub[len(path):], s.clickable) {
+			return sub
 		}
 	}
 	if top != nil {

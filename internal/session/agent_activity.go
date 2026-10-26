@@ -769,8 +769,8 @@ func agentActivityRecap(entries []AgentActivityEntry, since int64, state AgentSt
 			}
 		}
 	}
-	for i := len(entries) - 1; i >= 0; i-- {
-		if e := entries[i]; e.Kind == ActivityTurnEnd && e.Text != "" {
+	for _, e := range slices.Backward(entries) {
+		if e.Kind == ActivityTurnEnd && e.Text != "" {
 			rc.LastSaid = e.Text
 			break
 		}
@@ -785,8 +785,7 @@ func agentActivityRecap(entries []AgentActivityEntry, since int64, state AgentSt
 // command by its exit status. A call that started and has not finished, and a
 // command that sent no status, pass nothing.
 func newestTestRun(entries []AgentActivityEntry, patterns []string) *AgentActivityTest {
-	for i := len(entries) - 1; i >= 0; i-- {
-		e := entries[i]
+	for _, e := range slices.Backward(entries) {
 		isShell := e.Kind == ActivityCommand ||
 			(slices.Contains(shellTools, e.Tool) && (e.Kind == ActivityTool || e.Kind == ActivityToolDone || e.Kind == ActivityToolFailed))
 		if !isShell || !matchesTestPattern(e.Target, patterns) {
@@ -848,7 +847,7 @@ func (d *Daemon) recapTestPatterns() []string {
 // verbAgentActivity answers agent-activity: the pane's entries after since
 // and since_seq, the newest limit of them, and with recap a summary of every
 // one of them.
-func (d *Daemon) verbAgentActivity(_ *connState, params json.RawMessage) (any, *verbError) {
+func (d *Daemon) verbAgentActivity(cs *connState, params json.RawMessage) (any, *verbError) {
 	var p agentActivityParams
 	if verr := decodeParams(params, &p); verr != nil {
 		return nil, verr
@@ -863,7 +862,7 @@ func (d *Daemon) verbAgentActivity(_ *connState, params json.RawMessage) (any, *
 	if limit == 0 {
 		limit = agentActivityDefaultLimit
 	}
-	sess, verr := d.resolveVerbSession(p.Session)
+	sess, verr := d.resolveVerbSession(cs, p.Session)
 	if verr != nil {
 		return nil, verr
 	}

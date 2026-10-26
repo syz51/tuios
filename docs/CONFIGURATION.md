@@ -220,6 +220,19 @@ option_glyphs = "auto"   # auto, alt, bind, type
 See [Shifted digits and AZERTY](KEYBINDINGS.md#shifted-digits-and-azerty) and
 [One Option key for typing](KEYBINDINGS.md#one-option-key-for-typing).
 
+## Lock mode
+
+```toml
+[keybindings]
+lock = true
+```
+
+| Key | Default | What it does |
+|---|---|---|
+| `lock` | `false` | `true` gives every key to the pane in terminal mode, except the leader. The leader unlocks for one action, and then tuios locks again. A repeatable action keeps its menu open until you press `esc`. That menu takes only repeatable keys, and any other key goes to the pane. The zellij preset sets `true`. |
+
+See [Lock mode](KEYBINDINGS.md#lock-mode).
+
 ## Opening links
 
 tuios finds two kinds of link in a pane. An OSC 8 hyperlink is a link that a
@@ -580,11 +593,16 @@ own text output.
 `tuios mermaid` builds its colours from your tuios theme. `[mermaid] theme`
 picks one of the named diagram themes instead. The `--theme` flag wins over it.
 
+`[mermaid] background` is `theme` (the default) or `none`. With `none`, a kitty
+or png picture has no background, so the diagram is on the background of your
+terminal. The `--background` flag wins over it.
+
 ```toml
 [mermaid]
 theme = "flexoki"   # tuios (the default), pele, flexoki, flexoki-dark, nord,
                     # everforest, gruvbox, rose-pine, catppuccin-mocha,
                     # catppuccin-latte, tokyo-night, dracula, solarized-light, kanagawa
+background = "none" # theme (the default) or none
 ```
 
 ## CharmTone themes
@@ -667,9 +685,9 @@ omarchy: Tokyo Night, from /home/you/.local/state/omarchy/current. tuios follows
 ## Colour values
 
 Every colour key in tuios takes the same values: the backgrounds, the
-border colours, `scrollbar.tint`, `[appearance.selection]`, the dock's
-`fg` and `bg` keys, `[dock.tabs]`, the agent row's `fg`, and a theme
-file's `chrome` object.
+border colours, `scrollbar.tint`, `sidebar.cursor_background`,
+`[appearance.selection]`, the dock's `fg` and `bg` keys, `[dock.tabs]`,
+the agent row's `fg`, and a theme file's `chrome` object.
 
 | Value | Example | What it is |
 |---|---|---|
@@ -835,6 +853,31 @@ Use only a command that takes an argv and runs it as an argv. Do not use a
 command that joins its arguments into a shell line, such as `swaymsg exec --`
 or `hyprctl dispatch exec`. With such a command, the text of a desktop entry
 becomes shell code. Any installed package can write a desktop entry.
+
+## Workspace numbers
+
+A workspace's number is its position. Moving a workspace with
+`move_workspace_left` or `move_workspace_right`, or dragging its tab in the
+dock, renumbers it. A workspace exists while it holds a pane or is on screen.
+When a workspace that held a pane stops existing, because its last pane
+closed or moved away and it is not on screen, it loses its name.
+
+The numbers close up only when you change something: close a pane, move a
+pane to another workspace, close a workspace or move one. Then every
+workspace above an empty place moves down one: closing workspace 2 of 1, 2
+and 3 leaves 1 and 2. A pane whose program exits on its own (a command
+window with `close_on_exit`, a `tuios xpanes` run, an agent finishing)
+leaves the numbers alone, so a script or agent that holds a workspace number
+still names the same workspace. Its place stays empty until your next close
+or move closes it up. Typing `exit` in a pane's shell is a close. An empty workspace you only looked at goes without
+moving anything.
+
+`Alt+N` with a number past the last workspace that holds a pane opens the
+next one: with three workspaces, `Alt+5` opens workspace 4. When the
+workspace on screen is empty, it is the new one, and `Alt+N` to an unused
+number stays on it. A pane put directly on a higher number, with
+`tuios new-window --workspace 7` or `send_to_workspace_7`, keeps that number
+until the numbers below it close up.
 
 ## When a workspace becomes empty
 
@@ -1158,6 +1201,45 @@ window_title_align = "center"
 settings page, in the Appearance section, and `tuios set-config` applies them
 at once.
 
+## Focused border colour
+
+The focused pane's border shows the mode. By default it is the theme's cyan
+in window mode and its green in terminal mode. Three keys set it.
+
+| Option | Values | Default |
+|---|---|---|
+| `appearance.border_focused_color` | a [colour](#colour-values). It sets the border in both modes | empty |
+| `appearance.border_focused_color_window` | a [colour](#colour-values). It sets the border in window mode | empty |
+| `appearance.border_focused_color_terminal` | a [colour](#colour-values). It sets the border in terminal mode | empty |
+
+```toml
+[appearance]
+border_focused_color_window = "accent"
+border_focused_color_terminal = "#ff9e64"
+```
+
+- A key for one mode wins over `border_focused_color` in that mode.
+- An empty key uses the next key. After the three keys, the theme sets the colour.
+- `border_focused_color` also replaces the colours for copy mode and for an
+  agent that waits. The keys for one mode do not.
+- On many themes the cyan and the green have the same lightness. The default
+  terminal mode colour then moves darker, or lighter when darker is too faint.
+  You can then see the mode without the hue.
+- The default unfocused border is darker than both focused borders on a dark
+  background, and lighter on a light one. You can see focus without the hue.
+- Each default focused border has at least twice the contrast of the unfocused
+  border against the background.
+- With no theme, the default unfocused border is a grey near your terminal
+  background. The focused borders use a saturated cyan and green.
+- With `appearance.session_border` on, the focused border in window mode uses
+  the session colour. In terminal mode it uses the terminal mode colour.
+  Terminal mode stands further from the background and is at least as
+  saturated, so it is the more visible of the two. The session colour moves
+  toward the background to make the step.
+- At 16 colours the default borders use bright cyan and bright green, the
+  slots of your terminal's palette.
+- The settings page has a row for each key, in the Appearance section.
+
 ## Focused border gradient
 
 `appearance.border_focused_gradient` draws the focused pane's border in two
@@ -1186,6 +1268,32 @@ border_gradient_angle = 45
 - At 16 colours the border uses one colour, as before.
 - A colour value can name a slot or a role, such as `"accent accent_bright"`,
   so the gradient follows the theme.
+
+## Dialog and panel borders
+
+The small dialogs, such as rename, confirm and new space, draw their frame in the pane border style, `appearance.border_style`. The larger panels, such as the command palette, the switchers, the Agents view and the settings page, have no frame unless `appearance.frame_panels` is on. Then they take the same frame.
+
+| Option | Values | Default |
+|---|---|---|
+| `appearance.border_style` | `rounded`, `normal`, `thick`, `double`, `hidden`, `block`, `ascii`, `outer-half-block`, `inner-half-block`, `glyphs` | `rounded` |
+| `appearance.frame_panels` | `true` frames every panel in the border style, `false` leaves the panels without a frame | `false` |
+
+```toml
+[appearance]
+border_style = "double"
+frame_panels = true
+```
+
+How each border style draws a dialog or a framed panel:
+
+- `rounded`, `normal`, `thick`, `double` and `ascii` draw that style's corners and lines.
+- `hidden` draws no frame. The dialog keeps its size, and its title and key hints stay where the frame would carry them. A frame that is the only edge of what it holds is drawn as in `rounded` instead: the frame of a panel at 16 colours, and the frames round the regions inside a panel, such as an explorer's list and preview.
+- `block`, `outer-half-block` and `inner-half-block` draw the `rounded` frame. A solid frame is too heavy round a dialog of three rows.
+- `glyphs` draws the border of the active glyph set. A part of the border the set does not name is drawn as in `rounded`.
+- With `--ascii-only`, every frame is drawn with `+`, `-` and `|`.
+- At 16 colours a panel always has a frame, because its background is the terminal's own. The frame takes the border style, except `hidden` as above.
+
+Both options are on the settings page, in the Appearance section. A change applies at once.
 
 ## Borderless zoom
 
@@ -1386,6 +1494,9 @@ bold, and draws the others in dim text on the bar's own ground, so it still
 shows where you are. A value that is not a colour is ignored, with a
 warning, as if it were unset.
 Besides `{index}` and `{name}`, the tab format takes `{icon}` and `{zoom}`.
+`{index}` is the workspace's number, which is its position: dragging a tab to
+another place, or moving the workspace with `move_workspace_left` and
+`move_workspace_right`, renumbers it, and `Alt+N` goes to it by its new number.
 The flat style shows even a lone workspace and drops the `+` tab unless
 `show_add` is on. With no `[dock.tabs]` table the strip is unchanged.
 
@@ -1546,6 +1657,77 @@ A row that waits for a person keeps its attention mark in the gutter. The
 marker glyph is the `marker` role of the glyph set (see [GLYPHS.md](GLYPHS.md)).
 The option is on the settings page, in the Sidebar section.
 
+The focused pane's row in the terminals section carries the mark. Sometimes
+the rail does not show that row. The agents row of the pane then carries the
+mark in its gutter. This occurs in these cases:
+
+- `sections` does not include `terminals`.
+- The rail is narrow and lists an agent pane only in the agents section.
+- The terminals section has no room for the row.
+- The terminals section shows the panes of another session.
+
+The agents row uses the bar or the marker. With `underline` or `pill`, it
+uses the bar.
+
+## The files section style
+
+`appearance.sidebar.files_style` sets how the rail's files section shows a
+folder:
+
+| Value | What it shows |
+|---|---|
+| `list` | One folder. `..` goes up, and a folder row goes into the folder. This is the default |
+| `tree` | One tree from the folder. A folder opens under its own row, with indent guides and an open or closed mark |
+
+```toml
+[appearance.sidebar]
+files_style = "tree"
+```
+
+In the tree, the rail has these keys on a name:
+
+| Key | What it does |
+|---|---|
+| `l`, `right` | Open the folder. On an open folder, go to its first name |
+| `h`, `left` | Close the open folder. On another name, go to its folder |
+| `enter`, a click | Open or close the folder. On a file, do what the list does |
+
+The file action keys (`a`, `r`, `d`, `y`, `x`, `p`, `Y`, `S`) act on the name
+under the cursor. A new file or a paste goes into the folder of that name. On
+an open folder, it goes into that folder. With `folder_click = "cd"`, a folder
+row types a cd into the pane and does not open. With `both`, a folder row
+only opens, because a cd moves the root of the tree to that folder.
+
+In both styles, `g` and `G` on a file go to the first or last name of the
+list. Press the key again to go to the first or last row of the rail.
+
+tuios reads a folder only when you open it. It remembers the open folders of
+each session until tuios stops. You can open 64 folders at most. Each open
+folder shows its first 2000 names. tuios watches each open folder on this
+computer and shows a change without a key. A folder that is open under a
+folder on another computer shows a change when you open it again. When tuios
+sees that an open folder is gone, it closes the folder. A new folder with the
+same name starts closed.
+
+## The rail's cursor row
+
+When the rail has the keyboard, the row under the cursor has a lighter
+background, and its text is bold and underlined in the accent colour.
+`appearance.sidebar.cursor_background` sets the background of that row.
+
+```toml
+[appearance.sidebar]
+cursor_background = "#3b4261"   # or a slot name, such as "blue", or a role, such as "accent"
+```
+
+The value is a [colour](#colour-values). Empty, the default, keeps the
+theme's background for the cursor row. The colour does not change the text
+colour, so choose a colour that your text is readable on. The option sets
+only the row under the cursor while the rail has the keyboard. The rows under
+the mouse pointer and the cursor of an unfocused rail keep their own
+background. At 16 colours, the option has no effect: the cursor row is in
+reverse video. The option is on the settings page, in the Sidebar section.
+
 ## The rail's section headers
 
 `appearance.sidebar.header_style` sets how a section header is drawn:
@@ -1583,6 +1765,14 @@ density = "roomy"
 ```
 
 The panes do not move. Only the rail's rows change.
+
+## The rail's cursor row
+
+When the rail has the keyboard, the cursor row has a lighter background. The
+text of the row is also bold and underlined in the accent colour. This mark
+does not need the background, so you can see the cursor on a see-through
+terminal or with `background = "off"`. The gutter keeps its own marks. At 16
+colours the cursor row is in reverse video.
 
 ## A rail section that overflows
 
@@ -1738,6 +1928,34 @@ needs version 2 of the integration:
 run `tuios integration install claude-code` (or `opencode`, `kilo`, `qwen`)
 again after upgrading. [AGENT_STATE.md](AGENT_STATE.md#approvals-from-the-inbox) says how
 a prompt is held, answered and handed back.
+
+## The pane bell
+
+A program in a pane rings the bell when it prints the BEL character. For
+example, `printf '\a'` rings it. `notifications.bell` sets what tuios does then:
+
+```toml
+[notifications]
+bell = "toast"   # or "forward", "both", "off"
+```
+
+- `toast` shows "bell" in the dock. This is the default.
+- `forward` sends the bell to the terminal that tuios runs in. That terminal
+  then plays its sound, flashes, or marks the window or tab.
+- `both` does the two.
+- `off` does neither.
+
+tuios sends the bell for every pane, also for the pane you are in. It sends
+at most one bell from each pane in 200 milliseconds. A client attached to the
+daemon sends the bell to its own terminal. Over `tuios ssh` and in tuios-web,
+the bell goes to that client, not to the machine that runs tuios.
+
+The terminal decides what a bell does. In Ghostty, for example, set
+`bell-features` to choose a sound, an attention request or a title mark.
+
+The workspace bell marker does not change with this setting. Set
+`bell_marker` under `[dock.tabs]` to change it. You can also change
+the setting on the settings page, in the "Alerts" tab, as "Pane bell".
 
 ## Push notifications to your phone
 
@@ -1962,6 +2180,7 @@ find a plugin runs nothing. A plugin runs only when its id is in `enabled`.
 `tuios plugins install SOURCE` writes `plugins.lock` beside `config.toml`.
 It pins each installed plugin to one commit. Keep the file with your config,
 and run `tuios plugins install` on a new machine to get the same commits.
+`tuios plugins uninstall ID` removes the plugin from the file.
 
 An enabled plugin runs its commands with your rights, outside every pane.
 Enable only plugins that you trust.
@@ -1974,6 +2193,7 @@ tuios plugins enable example.notes
 tuios plugins disable example.notes
 tuios plugins link ~/src/my-herdr-plugin
 tuios plugins install owner/repo        # also adds the id to enabled
+tuios plugins uninstall example.notes   # also removes the id from enabled
 ```
 
 You must run them from a terminal outside tuios. A change to the file that
@@ -2012,6 +2232,9 @@ test_patterns = ["go test", "pytest"]
 
 [agents.queue]
 max = 8
+
+[agents.mail]
+wake = true
 
 [agents.checkpoints]
 enabled = true
@@ -2058,13 +2281,24 @@ max_untracked_mb = 50
   reads it at start and again when the file changes; a queue already longer
   keeps what it holds. The queue is built: see
   [AGENT_STATE.md](AGENT_STATE.md#queued-messages).
+- `[agents.mail]` `wake` types one line into an agent at rest that has mail
+  nobody told it about, through the delivery queue: the count, the senders
+  and the command that reads the mail, never the mail itself. It is true by
+  default. Set it to false to stop it. The daemon reads it at start. A file
+  change turns it off at once. Turning it on again waits for `tuios config
+  apply` from outside tuios, or a restart. See
+  [AGENT_STATE.md](AGENT_STATE.md#mail-that-wakes-an-agent-at-rest).
 - `[agents.checkpoints]` saves the git work tree of an agent's pane each time
   the agent finishes a turn that changed a file (`tuios checkpoint`).
   `enabled` is true by default. `keep` is how many checkpoints one pane keeps:
   50 by default, at most 1000. `max_untracked_mb` leaves an untracked file
   larger than this many megabytes out of a checkpoint: 50 by default, and a
   negative value means no limit. `tuios checkpoint list` names the files left
-  out, and a restore does not change them. The daemon reads these at start
+  out, and a restore does not change them. The same limit holds for
+  `tuios review`, review-stage, fan compare and `tuios fan diff`, which never
+  read such a file: review lists it as not read. Reading one would copy it
+  into the repository's object store, and through a clean filter such as Git
+  LFS's into that store too, on every read. The daemon reads these at start
   and again when the file changes. See [Turn checkpoints](AGENT_STATE.md#turn-checkpoints).
 
 One rail option goes with them: `appearance.sidebar.agent_rest_fold`, how long
@@ -2195,6 +2429,17 @@ mode = "strict"
 grants = ["read", "write", "fan", "files"]
 ```
 
+`task` lets a pane add, claim and finish the task cards of its own session
+(`tuios task`) without `admin`. A pane claims only for itself and changes only
+the card it holds. `admin` includes `task`. Under `strict`, give it to the
+panes that take work from a conductor:
+
+```toml
+[agents.permissions]
+mode = "strict"
+grants = ["read", "write", "fan", "task"]
+```
+
 The daemon reads the table when it starts and again when the file changes. A
 change that gives panes less reaches every pane on the default at its next
 call. A change that gives more, such as `strict` to `open`, waits, because a
@@ -2236,7 +2481,7 @@ allow = ["list", "mail"]
 | `open` | Start processes: sessions, windows, worktrees, fans, `start-agent`, clones of a repository by its URL, and panes this machine runs for it. |
 | `write` | Change what is here: type into panes, `run` a line at a prompt, close and move windows, set options, layouts and names, report agent state, and attach. Also read a worktree's work out with `bundle-worktree` (`tuios worktree pull`), since a machine that may type into a shell here can read those files already. |
 | `respond` | Answer for the person: prompts, held approvals, `ask-human` questions, dismissing Inbox items, and passing on held mail. Also type into a pane that waits on a prompt, from a pane on the other machine. The person on the other machine, outside every pane, needs only `write` for that. |
-| `files` | Read and write files here with the file verbs: a file's bytes, copies in and out (`transfer-start` on the other machine), new folders, moves and removes. It is apart from `write`, so you can stop one machine's copies and keep its typing. A write that arrives over the link lands only in the folders of `files_roots` (the receive folder unless you add more, see below), and the drop folder for dropped files, never in `~/.ssh`, `~/.gnupg`, credentials, shell start files, login items or tuios's own config, whatever `allow` and `files_roots` say. A read never returns keys or credentials. See [protocol.md](protocol.md#files-and-transfers). |
+| `files` | Read and write files here with the file verbs: a file's bytes, copies in and out (`transfer-start` on the other machine), new folders, moves and removes. It is apart from `write`, so you can stop one machine's copies and keep its typing. A write that arrives over the link lands only in the folders of `files_roots` (the receive folder unless you add more, see below), and the drop folder for dropped files, never in `~/.ssh`, `~/.gnupg`, credentials, shell start files, login items or tuios's own config, whatever `allow` and `files_roots` say. A read never returns keys or credentials. It also lets a window here that the other machine draws show kitty images that a program names by path (`kitten icat --transfer-mode=file`): this machine reads the file under the same read rules and `files_read_roots`, and sends the bytes. See [protocol.md](protocol.md#files-and-transfers). |
 
 With no table, a machine may `list`, `mail`, `open`, `write` and `files`,
 which is what every link could do before the policy existed. `respond` is

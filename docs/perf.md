@@ -1642,8 +1642,8 @@ byte over two million random pairs of nil, basic, indexed, RGBA, theme-resolved
 and truecolor colours with random attributes, and
 `TestPaletteSGRChangesAllocateNothing` pins the fast path at zero allocations.
 Themed ANSI 0 to 15 resolve to RGBA and truecolor is RGB, so both still go to
-uv, and the ghostty backend renders through `uv.Line.Render` and gets nothing
-from this.
+uv, and the ghostty backend renders through `grid.Render` as well, so it gets
+the same gain.
 
 `TestCompositorSkipsCleanWindows` compared one dirty pane against half of all
 nine dirty. With a pane this cheap to render the frame's fixed cost dominated
@@ -1660,6 +1660,44 @@ allocations against 199.
 | `ClientFrame/panes-9/compose` allocs/op | 42.49k | 11.78k | -72%, B/op -17% |
 | `RenderTerminalUnfocused` allocs/op | 127 | 13 | CPU `~` |
 | `KeystrokeFrame/panes-4` | | | `~` |
+
+**Cell pairs that cannot join skip the grapheme segmenter** (`emulator.go`).
+`grid.Render` asks `clustersJoin` about every pair of neighbouring non-blank
+cells, to know where a cluster break is needed, and for anything but two ASCII
+bytes that concatenated the pair and ran `ansi.FirstGraphemeCluster` on it. A
+screen of box drawing, blocks, braille and Powerline separators is nothing but
+such pairs. `neverJoins` now answers for U+0020 to U+02FF, U+2100 to U+2BFF and
+U+E000 to U+F8FF: UAX #29 joins across a boundary only when one side is CR or
+LF, Hangul jamo, Extend, ZWJ, SpacingMark, Prepend, a regional indicator or an
+Indic conjunct class, and no rune in those ranges is any of them. When the last
+rune of the left cell and the first rune of the right cell are both in them the
+pair is answered without the concatenation or the segmenter. The first range
+starts at U+0020 so that CR, which joins LF, is never taken. Both backends
+render through `grid.Render`, the ghostty one by returning the active
+buffer's render, so this reaches both.
+`TestClusterJoinAgreesWithTheSegmenter` holds `clustersJoin` to the segmenter
+over every ordered pair of single-rune cells in the three ranges, each of them
+against the runes that do join in both orders, those runes against each other,
+and 1,592 multi-rune pairs (8 named ones, such as a ZWJ tail before an extended
+pictographic, plus 24 multi-rune cells paired 66 ways).
+`TestClusterJoinAgreesWithTheSegmenterAtRangeEdges` covers the runes just
+outside the ranges, where combining blocks that do join sit, beside every rune
+inside them, and cells whose first rune joins the cell before while their last
+rune never joins. `TestRenderingASymbolScreenSkipsTheSegmenter` bounds the
+allocations of a symbol screen at 400 against 10,238 before.
+
+Method: `BenchmarkRenderSymbolScreen` (a 207x55 screen of box drawing frames,
+block bars, braille, a Powerline separator and ASCII text, every row full,
+coloured by indexed foregrounds only so every pen change stays on `penDiff`'s
+table) built as two test binaries, the base and the change, run alternately for
+eight rounds at a fixed `-test.benchtime 200x` with `-test.cpu 1` under `nice`
+and `taskset`, compared with `benchstat`.
+
+| | before | after | |
+|---|---|---|---|
+| `RenderSymbolScreen` CPU per op | 1225 us | 608 us | -50.4% (p<0.001) |
+| `RenderSymbolScreen` allocs/op | 10,238 | 20 | -99.8% |
+| `RenderSymbolScreen` B/op | 282.6 KiB | 206.7 KiB | -26.9% |
 
 ### Measured and deliberately not changed
 
@@ -1853,7 +1891,9 @@ five patterns, which would otherwise fail only on first use).
   allocations.
 - **`outputChan`**, 4096 slots and about 224 KB per pane at attach. The
   producer drops data when it is full, so shrinking it trades memory for silent
-  loss until backpressure is redesigned.
+  loss until backpressure is redesigned. Revisited in "2026-10 the client's
+  output queue": the bound and the drop rule stay, and the slots are no longer
+  reserved up front.
 - **`RestoreTerminalStates`**, serial `GetTerminalState` round trips at about
   0.2 ms per pane on top of about 2 ms fixed, and **`ensureAttachTarget`**, an
   extra verb connection of 0.4 to 0.6 ms at attach.
@@ -3390,8 +3430,19 @@ The scrim costs about what the spotlight does, a quarter of a millisecond on a
 full 207x55 frame, and only on frames drawn while a modal is open; a modal left
 open over quiet panes draws none. The compositor rows are within noise.
 
-The shimmer asks for at most 15 frames a second, and only while a working
-agent's row is on screen. Each is a frame with nothing dirty plus the pass. A
+The shimmer asks for at most 8 frames a second (it was 15), and only while a
+working agent's row is on screen. A tick that finds a frame composed within the
+last interval for another reason, such as pane output, draws nothing, because
+that frame carried the band already. Frames sent to the host a second, counted
+as synchronized-output ends on a pty capture, with one agent marked working:
+
+| Case | Before | After |
+|---|---|---|
+| shimmer only | 8.4 | 4.4 |
+| shimmer and a pane that prints 10 times a second | 17.4 | 10.0 |
+
+The shimmer only figure is below the rate asked for because a frame equal to the
+last one is not sent, and the band is off the name for part of each sweep. Each is a frame with nothing dirty plus the pass. A
 hovered overflowing rail row (the marquee) costs more per frame, because the
 rail is never served from its cache while it scrolls
 (`BenchmarkSidebarAgentsRebuild`, about 345 µs).
@@ -4025,6 +4076,153 @@ trim.
   was the harness. The one-second trim keeps the steady flood at the
   old cost.
 
+## 2026-10 the client's output queue
+
+Each daemon pane on the client made its output queue whole with the pane: a
+channel of 4096 chunks, 56 bytes a slot, about 229 KB before the pane printed
+anything. The startup-pass ledger kept `outputChan` because shrinking it
+traded memory for silent loss. This entry keeps the 4096-slot bound and the
+drop rule and only stops reserving the slots up front, as the daemon's
+subscriber queue entry above did for its channel.
+
+### What changed
+
+- `outputQueue` (`internal/terminal/output_queue.go`) replaces
+  `Window.outputChan`. It is a ring behind a mutex that starts empty, doubles
+  from 16 slots with the backlog, and stops at the same 4096. A chunk the
+  bound refuses is dropped, as before. Its method set is the one `ptyQueue`
+  has: `push`, `pop`, `oversized`, `trim`, `len`, `close` and a wake channel.
+- `outputWriter` takes chunks until the queue is empty and only then waits on
+  the one-slot wake channel. A push that makes the queue non-empty leaves a
+  token there. The order, the batch cut at a resize or a drain sentinel,
+  `queuedBytes`, `maxQueuedBytes` and the epochs are unchanged.
+- A queue that grew past 16 slots gives its array back after it has stayed
+  empty for one second. The writer arms a timer for that only when the queue
+  is oversized and empty, and stops it when it returns.
+- `DrainPendingOutput` waits for a free slot at the bound, polling at
+  `queueRoomPoll` as `waitForQueueRoom` does, so its sentinel is never
+  dropped. `Close` closes the queue, so a late sender queues nothing.
+- A window not built by `NewDaemonWindow` has no queue, and the daemon-only
+  paths stay no-ops for it.
+
+### Numbers
+
+`TestIdleDaemonPanesReserveNoOutputQueue` builds 50 daemon windows at 120x36
+with 1000 lines of scrollback and reads `HeapAlloc` after two `runtime.GC()`
+calls, before and after, with the windows reachable.
+`TestFloodedDaemonPanesGiveBackTheirQueue` builds 20 windows at 12x6 with 1
+line of scrollback. Each window has its writer stalled with `LockIO`, takes
+one chunk, settles 200 ms, is sent 5000 more chunks of one numbered line
+("N\r\n") so the queue grows to its bound, and is released and drained with
+`DrainPendingOutput`. After all 20, the test idles 1.5 s and reads the heap
+the same way. The figures below are the logged per-window readings of those
+two tests, three runs each, main and branch interleaved (main, branch, main,
+branch, main, branch), run as `nice -n 10 taskset -c 0-11 go test -count=1 -v
+-run '^(TestIdleDaemonPanesReserveNoOutputQueue|TestFloodedDaemonPanesGiveBackTheirQueue)$'
+./internal/terminal/`. The branch runs are in the branch worktree. The main
+runs are in a detached worktree of 14b4b4ec8 with only
+`daemon_window_memory_test.go` copied in from the branch;
+`output_queue_test.go` stays out of it because it needs the new type. The
+budgets in the test file fail on main, and the readings are the logged values.
+
+| per window | main | branch |
+|---|---|---|
+| idle, 50 windows | 281780, 281997, 281890 B | 52468, 52584, 52361 B |
+| after a burst and 1.5 s idle, 20 windows | 313731, 313101, 313184 B | 84016, 83946, 84089 B |
+
+An idle pane saves about 229 KB. After the same burst and idle second, a
+branch window holds about 229 KB less than a main window, the grown array given
+back; an idle branch window holds about 229 KB less than an idle main window.
+
+### Invariants held
+
+- Chunks reach the emulator in the order they arrived, and the 4097th chunk
+  queued behind a stalled writer is dropped, as with the channel.
+- A drain sentinel is never dropped: at the bound it waits for room, then
+  blocks until everything queued before it is applied, and returns when the
+  window closes.
+- The writer holds the queue lock only for a push or a pop, never across an
+  emulator write.
+
+## 2026-10 the catch-up ring grows with the output
+
+Every pane reserved a 64 KiB catch-up ring (`outputBuffer`) when it was
+installed, whether or not it ever printed more than a prompt. A pane at a shell
+prompt holds about 100 bytes of it. At 50 idle panes that was 3.1 MiB of the
+daemon's heap, held for as long as the panes live.
+
+### What changed
+
+- The ring starts nil. `appendToBuffer` grows it before it stores a chunk that
+  does not fit the room left: to the smallest power of two, at least 1 KiB,
+  that holds the bytes kept plus the chunk, capped at `outputRingMax` (64 KiB,
+  the bound as before). Only then do the tail-keep and half-buffer shift run,
+  on the ring's current length. A ring at 64 KiB never grows and behaves as it
+  did.
+- The resize-mark prune and the graphics span prune measure the ring as
+  `max(len(outputBuffer), outputRingMax)`, so a ring that is still short drops
+  the marks and spans the full ring would, and keeps the ones it keeps.
+
+### Numbers
+
+Heap: a throwaway test in the `session` package, not kept in the tree. It
+builds the in-process test daemon (`newTestDaemonSession`), reads
+`runtime.MemStats.HeapAlloc` after two `runtime.GC()` calls, adds 50 windows
+with `sh -c "sleep 1; printf 'ring-probe> '; sleep 30"`, waits 3 s, collects
+twice again and reads `HeapAlloc` once more. The figure is the difference. It
+also sums `cap(outputBuffer)` over the 50 panes. Three runs of each of main and
+branch, interleaved, `nice -n 10` on cores 6 to 11.
+
+| | main | branch |
+|---|---|---|
+| heap added by 50 panes | 9.05, 9.05, 9.06 MB | 5.83, 5.83, 5.84 MB |
+| rings, summed `cap(outputBuffer)` | 3,276,800 B | 51,200 B |
+| saved per pane, from the heap figures | | about 64.5 KB |
+
+Right after the window is added the ring has no array; once the prompt is
+printed it holds 1 KiB.
+
+Output path: `go test -run '^$' -bench 'BenchmarkPTY(OutputChunk|Broadcast)$'
+-benchmem`, six runs of each test binary (main and branch) interleaved,
+`nice -n 10` on cores 6 to 11, benchstat. Both benchmarks build their `PTY` with
+a 64 KiB ring, so the ring never grows in them; they measure the `max` in the
+two prunes and nothing else.
+
+| | main | branch | |
+|---|---|---|---|
+| OutputChunk, 0 subscribers | 965 ns | 869 ns | ~ (p=0.13) |
+| OutputChunk, 1 subscriber | 966 ns | 903 ns | ~ (p=0.065) |
+| OutputChunk, 4 subscribers | 985 ns | 888 ns | -9.9% (p=0.009) |
+| Broadcast, 1 subscriber | 348 ns | 313 ns | -10.1% (p=0.015) |
+| Broadcast, 4 subscribers | 489 ns | 477 ns | ~ (p=0.49) |
+| Broadcast, 16 subscribers | 1.04 µs | 1.12 µs | ~ (p=0.12) |
+
+Four of six rows show no change. Two read as faster at p below 0.05, but the
+runs spread by 8% to 28% on a machine in use and the code on this path differs
+by one comparison, so they are not claimed as a gain. Bytes and allocations
+per op are the same on both (0 B and 0 allocs, 1 B at 16 subscribers).
+
+`TestAnIdlePaneHoldsNoCatchUpRing` holds the budget. It adds one window to the
+test daemon, reads `cap(outputBuffer)` under `outputMu` right away and wants 0,
+then polls for up to 10 s until `outputBuffer[:outputPos]` holds the prompt
+and wants a capacity of at most 4096. On main it reads 65,536 at both points.
+`TestAGrowingRingHoldsWhatTheFixedRingHolds` holds the invariant. It is a
+seeded differential over 240 pairs of `PTY` values, one with a 64 KiB ring and
+one with none, driven by the same appends (chunks of 1 B to 80 KiB, or small
+appends that cross every size from 1 KiB to 64 KiB) and at least two
+`Resize` calls while the growing ring is short. After every append the
+returned position, `outputSeq`, `outputPos`, `outputBuffer[:outputPos]` and
+the whole `resizeMarks` slice must be equal.
+
+### Invariants held
+
+- After any sequence of appends, `outputSeq`, `outputPos` and
+  `outputBuffer[:outputPos]` equal what the fixed 64 KiB ring holds, as do the
+  resize marks. The catch-up and replay code is unchanged.
+- The ring is reassigned only inside `appendToBuffer`, and every append and
+  `broadcast` pair already holds `streamMu`, which is what lets `broadcast`
+  read the ring's length without `outputMu`.
+
 ## 2026-10 allocations on the output path
 
 The kernel hands the daemon's read loop one line at a time when lines are
@@ -4370,3 +4568,194 @@ the machine, so neither test reads a clock.
 - `js.Hypot` keeps JavaScript's compensated sum, which costs about 2%. A plain
   `math.Hypot` can differ in the last bit and move a route.
 - The tuios binary grows by 20 KB (see "Binary size budget").
+
+## 2026-10 the pane read path in live handoff part 1
+
+Part 1 of the live handoff (`docs/design/live-handoff.md`) changes a pane's
+read path in two places. The reader waits for output on the master and a wake
+pipe before each read, outside `readMu`, so a quiesce never waits on a quiet
+program. And the reply forwarder no longer blocks in a read of the emulator's
+replies: the emulator wakes it through `OnResponse` each time it queues one.
+The design, the platforms and the alternatives are in
+`docs/design/pane-read-path.md`.
+
+On macOS a read takes at most about 1 KiB, whatever the buffer: 98.4% of the
+reads in a flood are 1024 to 2047 bytes, on main and on the branch alike. So
+the reader waits once per KiB, and the wait is the cost. A `poll(2)` there
+builds and tears down a kqueue on every call (631 ns with output ready, against
+186 ns for `kevent(2)` on a kqueue registered once). Each pane keeps a kqueue
+of its own on macOS and the BSDs, and Linux keeps the poll, which costs a flood
+there about a third of a millisecond of CPU per MB.
+
+### Numbers
+
+Apple M5 Pro, macOS, Go 1.26.10, `nice -n 10`, with other work on the machine.
+A scratch benchmark, not committed, cats a 64 MiB file of 100-column lines
+through a pane of a real daemon into one attached `TUIClient`, on the rig of
+`wire_e2e_bench_test.go` (`newE2ERig`), three files a run at `-test.cpu 4`.
+CPU is getrusage of the test process, which holds the daemon and the client.
+Test binaries of main at `8373529`, of the branch with a poll per read, and of
+the branch with the kqueue per pane ran in alternating order, 14 runs each, at
+a load average of 4.7 to 6.1. Figures are medians, interquartile range in
+brackets.
+
+| 64 MiB through a pane | main | poll per read | kqueue per pane |
+|---|---:|---:|---:|
+| throughput, MB/s | 109.8 (107.6-110.9) | 101.5 (97.6-103.4) | 108.3 (105.7-110.2) |
+| CPU per MB, ms | 18.4 (18.2-18.9) | 19.7 (19.4-20.6) | 18.5 (18.2-18.8) |
+| client batches per file | 604 | 656 | 621 |
+
+A second rotation at a load average of 6.7 to 10.4 kept the order: 109.6,
+99.3 and 108.1 MB/s, and 18.8, 20.2 and 18.5 ms per MB. A build with no wait
+at all, which cannot quiesce, measured 108.3 MB/s and 19.0 ms per MB against
+main's 107.1 and 19.2 in its own rotation, so the whole difference was the
+wait. In a CPU profile of the poll build, `unix.Poll` is 21% of the samples,
+the sleep and wake included that main pays inside `read`. The client batches
+follow the reader's speed: the reads are the same size on every build.
+
+### Measured and deliberately not changed
+
+- A flood asks the emulator for no replies, so `OnResponse` never fires and
+  the forwarder costs it nothing. Waking the forwarder after every chunk cost
+  about 5 ms per MB.
+- Go's runtime poller on a non-blocking master saves nothing on macOS, where
+  the queue is empty after each read, and would move every write of the
+  program's input to a polled file. Reading again without a wait after a full
+  read never applies, since a read never fills the buffer. See
+  `docs/design/pane-read-path.md`.
+
+## 2026-10 motion draws once per frame (#1058)
+
+On a wide screen, hover over the settings panel trailed the pointer by up to
+two seconds. Bubble Tea composes a frame after every message. An open overlay
+passes every motion event, so each report composed a whole frame. At 320x80
+a frame with the settings panel up cost about 9 ms of client CPU, and a
+terminal reports motion every few ms. The events queued up behind the frames,
+and the queue drained only after the pointer stopped. v0.10.1 behaves the
+same way, so this is not a regression.
+
+### What changed
+
+- Every motion event draws at most once per frame period (`max_fps`). Drags
+  and the mouse beam had this budget already, and now hover has it too. The
+  handler still runs for every event, so the model always holds the newest
+  pointer position.
+- A move that the budget held back sets `pointerMotionPending`. The
+  maintenance tick wakes at the end of the frame period and draws the last
+  position. A pointer at rest never sets the flag, so idle stays at zero
+  wakeups.
+- Every composed frame restarts the budget, so a frame for pane output also
+  counts.
+- The hosts page parsed the whole config file on every frame to read the
+  `[tailscale]` table. That was 16% of client CPU during the sweep. The table
+  is now parsed again only when the file's size or modification time changes.
+
+### Numbers
+
+`drive.py`: a PTY driver that runs the real client on a scratch daemon. It
+opens settings and sends SGR motion reports at 200 Hz for 3 s, one row per
+event. Lag is the time from the last report to the last frame byte. CPU is
+the client's utime and stime.
+
+| Size | | lag | client CPU | frames written |
+|---|---|---|---|---|
+| 120x40 | before | 0 ms | 102% | 600 |
+| | after | 4 ms | 22% | 172 |
+| 200x60 | before | 63 ms | 136% | 590 |
+| | after | 6 ms | 32% | 171 |
+| 320x80 | before | 838 ms | 143% | 451 |
+| | after | 2 ms | 44% | 140 |
+| 400x100 | before | 2310 ms | 138% | 346 |
+| | after | 7 ms | 55% | 106 |
+| 320x80, 3 panes | before | 662 ms | 130% | 452 |
+| | after | 11 ms | 40% | 140 |
+| 320x80, v0.10.1 | | 575 ms | 152% | 436 |
+
+The rail at 320x80 went from 2.4 ms to 0.9 ms of CPU per event. Idle at
+200x60 is 0 context switches a second before and after, and 0 to 0.3 a
+second in the 3 s after a sweep.
+
+`BenchmarkMouseSweepSettings` (new; 320x80, settings open, filter, Update and
+View per event):
+
+| | ns/op | frames/1k-events |
+|---|---|---|
+| before | 3.22 to 3.52 ms | 765 to 772 |
+| after | 21.8 to 22.0 µs | 1.2 |
+
+### Measured and deliberately not changed
+
+A settings frame at 320x80 still costs about 5.7 ms. `renderSettings` is 1.9
+ms of that, mostly `ansi.StringWidth` in the row layout. With one frame per
+period, that cost no longer builds a queue.
+
+## 2026-10 the motion budget starts when the frame ends (#1058)
+
+On v0.11.0, hover over the settings panel still trailed the pointer on a wide
+screen. The motion budget counted one frame period from the start of the last
+compose. A compose that took longer than one period had used up the whole
+budget before it returned, so the next motion event composed again. That
+event was already old: it had waited in Bubble Tea's queue during the
+compose. So every event composed a frame, as before #1059, and the queue
+grew for as long as the pointer moved.
+
+A settings frame at 320x80 costs about 6 ms here, and a rail hover frame
+about 2 ms. A frame period is 16.7 ms at the default 60 fps and 6.9 ms at
+144 fps. So the panel crosses the period first, on a slower machine, a wider
+screen or a higher `max_fps`, and the rail does not.
+
+### What changed
+
+The budget counts from the end of the compose. The events that queued during
+the compose drain without a frame, and the next frame is at most one period
+plus one compose behind the pointer.
+
+### Numbers
+
+`drive.py` as in the section above, 500 reports a second for 4 s, settings
+open. Lag is the time from the last report to the last frame byte.
+
+| Size | max_fps | | lag | client CPU | frames written |
+|---|---|---|---|---|---|
+| 320x80 | 60 | before | 13 ms | 47% | 219 |
+| | | after | 19 ms | 38% | 176 |
+| 320x80 | 240 | before | 7638 ms | 143% | 1633 |
+| | | after | 14 ms | 82% | 358 |
+| 400x100 | 144 | before | 5950 to 12072 ms | 127 to 149% | 947 to 1118 |
+| | | after | 20 to 509 ms | 70 to 77% | 181 to 212 |
+
+At 60 fps this machine composes inside the period, and the two builds behave
+the same. `TestSettingsHoverKeepsUpWithThePointer` drives the 400x100,
+240 fps case through the real binary.
+
+## 2026-10 the motion budget also waits for the frame's write (#1058)
+
+After the change above, `TestSettingsHoverKeepsUpWithThePointer` still failed
+in CI now and then, with the hover 5 to 6 s behind the pointer. A trace of the
+client on a loaded machine showed why. Bubble Tea writes a frame from its own
+goroutine and holds a lock while it parses, diffs and writes it. The event
+loop takes the same lock to store the view of every message. So the loop
+stopped for the whole write, which at 400x100 on a loaded machine is about as
+long as the compose. When it came back, the budget counted from the end of
+the compose had run out, and the first queued event composed again. The loop
+took one or two events per compose and write, and the reports piled up in
+the input reader.
+
+### What changed
+
+The frame writers (`PostRenderWriter`, `FrameHookWriter`) note when they
+finish writing a frame. The motion budget runs from the later of the end of
+the compose and the end of that write (`motionBudgetFrom`).
+
+### Numbers
+
+`drive.py`, 400x100, `max_fps = 240`, settings open, 500 reports a second
+for 4 s. The client runs on two cores with four busy loops on them.
+
+| | lag | frames written |
+|---|---|---|
+| before | 5186 to 6384 ms | 168 to 217 |
+| after | 27 to 56 ms | 102 to 121 |
+
+At 320x80 and 60 fps with no load, both builds write 177 frames, with 8 and
+13 ms of lag.

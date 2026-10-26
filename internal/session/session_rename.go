@@ -39,7 +39,7 @@ func RenamedSessionTarget(err error) (current string, ok bool) {
 	return m[2], true
 }
 
-func (d *Daemon) verbRenameSession(_ *connState, params json.RawMessage) (any, *verbError) {
+func (d *Daemon) verbRenameSession(cs *connState, params json.RawMessage) (any, *verbError) {
 	var p struct {
 		Session string `json:"session"`
 		Name    string `json:"name"`
@@ -47,7 +47,7 @@ func (d *Daemon) verbRenameSession(_ *connState, params json.RawMessage) (any, *
 	if verr := decodeParams(params, &p); verr != nil {
 		return nil, verr
 	}
-	sess, verr := d.resolveVerbSession(p.Session)
+	sess, verr := d.resolveVerbSession(cs, p.Session)
 	if verr != nil {
 		return nil, verr
 	}
@@ -108,6 +108,61 @@ func (d *Daemon) followRenamedSession(verb string, params json.RawMessage) json.
 		return params
 	}
 	m["session"], _ = json.Marshal(sess.Name())
+	out, err := json.Marshal(m)
+	if err != nil {
+		return params
+	}
+	return out
+}
+
+// followOwnPane sends a call from a pane about that same pane to the session
+// holding it, when the session it names is gone under every name. The pane's
+// TUIOS_SESSION is what its processes send, and it can name a session the
+// daemon no longer knows by that name: an alias held only in daemon memory is
+// lost to a restart, or to a handoff from a build that did not carry it, and
+// every hook of an agent in the pane is then refused with session_not_found
+// for as long as the agent runs. The window id is the pane's own and names
+// one pane on this machine, so the caller, placed in that pane by its token or
+// by its process, is answered as it was before the name went.
+//
+// A session name that resolves is never rewritten here, so a call naming a
+// session that exists, the pane's or another, is checked as it is sent. A
+// placement read from the caller's environment does not count, since a
+// process can set that itself. The verbs in renameNotFollowed are left as
+// sent, as followRenamedSession leaves them.
+func (d *Daemon) followOwnPane(cs *connState, verb string, params json.RawMessage) json.RawMessage {
+	if renameNotFollowed[verb] || cs == nil || cs.viaLink || cs.paneOnly || len(params) == 0 {
+		return params
+	}
+	var named struct {
+		Session string `json:"session"`
+		Window  string `json:"window"`
+	}
+	if json.Unmarshal(params, &named) != nil || named.Session == "" || named.Window == "" {
+		return params
+	}
+	if s, _ := d.manager.ResolveSession(named.Session); s != nil {
+		return params
+	}
+	holder := d.sessionHoldingWindow(named.Window)
+	if holder == nil {
+		return params
+	}
+	if placed, via := d.placePaneWindow(cs); placed != named.Window || (via != "token" && via != "pid") {
+		return params
+	}
+	// The struct decode matches keys without regard to case, so the rewrite
+	// goes ahead only when the exact keys hold the values checked above.
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(params, &m); err != nil {
+		return params
+	}
+	var session, window string
+	if json.Unmarshal(m["session"], &session) != nil || session != named.Session ||
+		json.Unmarshal(m["window"], &window) != nil || window != named.Window {
+		return params
+	}
+	m["session"], _ = json.Marshal(holder.Name())
 	out, err := json.Marshal(m)
 	if err != nil {
 		return params

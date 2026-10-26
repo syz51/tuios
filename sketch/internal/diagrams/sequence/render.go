@@ -1,4 +1,4 @@
-// Ported from pele src/diagrams/sequence/render.ts at 8fad23bd51783e4df1204e177a7fb0d2a30dcd13.
+// Ported from pele src/diagrams/sequence/render.ts at 4eff76f98c73b6817800a05773517f35832e4e92.
 
 package sequence
 
@@ -247,7 +247,7 @@ func draw(db *SeqDb, config types.Config, options types.RenderOptions, tight boo
 	tiny := js.Round(size * 0.75)
 	measurer := options.Measurer
 	if measurer == nil {
-		measurer = text.DefaultMeasurer(options.FontFamily, "")
+		measurer = text.DefaultMeasurer(options.FontFamily, options.FontFamilyMono)
 	}
 	icons := options.Icons
 	pad := types.Or(options.Padding, 8)

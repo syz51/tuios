@@ -47,7 +47,7 @@ The pane is not focused unless you pass --focus. --name gives it the name
 list-agents shows and -w takes, so you can address it as 'reviewer'.
 
 --grants says what the agent may do through tuios: read, write, fan,
-files, respond, admin, or none. Without it the pane holds the default of
+files, task, respond, admin, or none. Without it the pane holds the default of
 [agents.permissions]. Started from a pane without admin, it holds that
 pane's own grants. A pane can never give more than it holds.
 
@@ -99,7 +99,7 @@ tuios agent-proto --help.`,
 			}, jsonOutput)
 		},
 	}
-	cmd.Flags().StringVarP(&sessionName, "session", "s", "", "Session to open the pane in, HOST:SESSION for another machine. Created when it does not exist (default: most recently active)")
+	cmd.Flags().StringVarP(&sessionName, "session", "s", "", "Session to open the pane in, HOST:SESSION for another machine. Created when it does not exist (default: this pane's session, else the most recently active)")
 	cmd.Flags().StringVar(&name, "name", "", "The pane's name, which list-agents shows and -w takes")
 	cmd.Flags().StringVar(&cwd, "cwd", "", "The directory the agent starts in (default: the focused pane's)")
 	cmd.Flags().StringVar(&repo, "repo", "", "A directory inside a repository: the agent starts in its main checkout")
@@ -111,7 +111,7 @@ tuios agent-proto --help.`,
 	_ = cmd.RegisterFlagCompletionFunc("protocol", cobra.FixedCompletions([]string{"acp", "codex"}, cobra.ShellCompDirectiveNoFileComp))
 	cmd.Flags().IntVar(&readyTimeout, "ready-timeout", 0, "Milliseconds to wait for the agent to be ready (default 120000)")
 	cmd.Flags().StringArrayVar(&env, "env", nil, "Pass a variable to the agent: NAME for your own value, NAME=VALUE to set one. Repeatable. PATH is sent too, except to a session on another machine")
-	cmd.Flags().StringSliceVar(&grants, "grants", nil, "What the agent may do through tuios, comma separated: read, write, fan, files, respond, admin, or none (default: [agents.permissions], or the calling pane's own)")
+	cmd.Flags().StringSliceVar(&grants, "grants", nil, "What the agent may do through tuios, comma separated: read, write, fan, files, task, respond, admin, or none (default: [agents.permissions], or the calling pane's own)")
 	cmd.Flags().BoolVar(&jsonOutput, "json", false, "Output result as JSON")
 	_ = cmd.RegisterFlagCompletionFunc("session", completeSessionNames)
 	_ = cmd.RegisterFlagCompletionFunc("grants", completeGrantNames)

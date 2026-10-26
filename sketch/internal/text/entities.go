@@ -1,4 +1,4 @@
-// Ported from pele src/text/entities.ts at 8fad23bd51783e4df1204e177a7fb0d2a30dcd13.
+// Ported from pele src/text/entities.ts at 4eff76f98c73b6817800a05773517f35832e4e92.
 
 package text
 
@@ -11,7 +11,7 @@ import (
 	"tuios.dev/sketch/internal/lazyre"
 )
 
-const named_ = "amp:38,lt:60,gt:62,quot:34,apos:39,nbsp:160,iexcl:161,cent:162,pound:163,curren:164,yen:165,sect:167," +
+const named_ = "amp:38,lt:60,gt:62,quot:34,apos:39,nbsp:160,shy:173,iexcl:161,cent:162,pound:163,curren:164,yen:165,sect:167," +
 	"copy:169,laquo:171,not:172,reg:174,deg:176,plusmn:177,sup2:178,sup3:179,micro:181,para:182,middot:183," +
 	"sup1:185,raquo:187,frac14:188,frac12:189,frac34:190,iquest:191,times:215,divide:247,ndash:8211,mdash:8212," +
 	"lsquo:8216,rsquo:8217,sbquo:8218,ldquo:8220,rdquo:8221,bdquo:8222,dagger:8224,Dagger:8225,bull:8226," +
@@ -105,6 +105,16 @@ func restorePlaceholders(text string) string {
 		return text
 	}
 	return out.String() + text[last:]
+}
+
+var rePlaceholder = lazyre.New(`ﬂ°°?(\w+)¶ß`)
+
+// WrittenCodes turns the placeholders back into the `#name;` codes the author wrote.
+func WrittenCodes(text string) string {
+	if !strings.Contains(text, CLOSE) {
+		return text
+	}
+	return rePlaceholder.ReplaceAllString(text, "#$1;")
 }
 
 // DecodeEntities turns Mermaid's `#35;` / `#quot;` codes (as hidden by encodeEntities) and HTML entities into characters.

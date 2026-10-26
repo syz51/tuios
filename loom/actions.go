@@ -2,6 +2,7 @@ package loom
 
 import (
 	"fmt"
+	"maps"
 	"sort"
 	"strings"
 
@@ -39,12 +40,24 @@ type View struct {
 	Cursor map[string]string
 	Scroll map[string]int
 	Split  map[string]float64
+	// Text holds what was typed into a text field that binds no state
+	// path, and Caret the caret of each text field, in runes.
+	Text  map[string]string
+	Caret map[string]int
+	// Page is how many rows a document taller than its surface is
+	// scrolled down. PageAnchor is the key of the box at the top of the
+	// page and PageRow the row of it there, so the place stays on the same
+	// content when a new width reflows the page.
+	Page       int
+	PageAnchor string
+	PageRow    int
 }
 
 // newView returns an empty view.
 func newView() *View {
 	return &View{Tabs: map[string]string{}, Sort: map[string]SortSpec{}, Filter: map[string]string{},
-		Fold: map[string]bool{}, Cursor: map[string]string{}, Scroll: map[string]int{}, Split: map[string]float64{}}
+		Fold: map[string]bool{}, Cursor: map[string]string{}, Scroll: map[string]int{}, Split: map[string]float64{},
+		Text: map[string]string{}, Caret: map[string]int{}}
 }
 
 // Effect is an action that leaves the document: the host carries it out.
@@ -81,9 +94,7 @@ func runActions(doc *tml.Node, store *tml.Store, view *View, source string, acti
 		env = &e
 	}
 	vars := map[string]any{}
-	for k, v := range env.Vars {
-		vars[k] = v
-	}
+	maps.Copy(vars, env.Vars)
 	evalArg := func(a tml.Action, i int) (any, error) {
 		vars["state"] = store.State()
 		e := *env

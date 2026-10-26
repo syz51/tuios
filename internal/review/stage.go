@@ -85,15 +85,16 @@ func IndexOptions(ctx context.Context, dir, mode string) (Options, error) {
 //
 // The listing runs over the whole tree, as review-diff's does, so a rename is
 // seen as one. The hunks are read for the one file, which gives the same
-// hunks as the whole diff for any file that is not a rename.
-func IndexChange(ctx context.Context, dir, mode, path string, context int) (*File, error) {
+// hunks as the whole diff for any file that is not a rename. An untracked
+// file larger than maxUntracked bytes is not read, so it has no change here.
+func IndexChange(ctx context.Context, dir, mode, path string, context int, maxUntracked int64) (*File, error) {
 	opt, err := IndexOptions(ctx, dir, mode)
 	if err != nil {
 		return nil, err
 	}
 	tree := opt.Tree
 	if tree == "" {
-		if tree, err = worktree.SnapshotTree(ctx, dir); err != nil {
+		if tree, _, err = worktree.SnapshotTree(ctx, dir, maxUntracked); err != nil {
 			return nil, err
 		}
 	}
@@ -313,10 +314,10 @@ func ApplyToIndex(ctx context.Context, dir, patch string, zeroContext bool) erro
 }
 
 // StageFile stages the whole of each path: its change, its removal, or the
-// untracked file.
+// untracked file. It stages as git add -A would, without looking inside a
+// submodule's work tree (worktree.StageAll).
 func StageFile(ctx context.Context, dir string, paths ...string) error {
-	_, err := git(ctx, dir, nil, append([]string{"add", "-A"}, pathspec(paths)...)...)
-	return err
+	return worktree.StageAll(ctx, dir, nil, pathspec(paths)[1:], nil)
 }
 
 // UnstageFile puts each path's index entry back as HEAD has it, or removes
@@ -434,9 +435,8 @@ func SetIndexEntries(ctx context.Context, dir string, entries []IndexEntry) erro
 
 // gitInput is git with stdin.
 func gitInput(ctx context.Context, dir, stdin string, args ...string) (string, error) {
-	cmd := childproc.CommandContext(ctx, "git", args...)
-	cmd.Dir = dir
-	cmd.Env = gitEnv(nil)
+	cmd := childproc.Git(ctx, dir, args...)
+	cmd.Env = gitEnv(cmd.Env, nil)
 	cmd.Stdin = strings.NewReader(stdin)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout

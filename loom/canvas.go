@@ -108,11 +108,11 @@ func (c *canvas) put(x, y int, g string, w int, st style) {
 	cell := uv.Cell{Content: g, Width: w, Style: c.resolve(st, line.At(x))}
 	if c.links != nil {
 		if st.link != "" {
-			for k := 0; k < w; k++ {
+			for k := range w {
 				c.links[image.Point{x + k, y}] = st.link
 			}
 		} else {
-			for k := 0; k < w; k++ {
+			for k := range w {
 				delete(c.links, image.Point{x + k, y})
 			}
 		}
@@ -122,6 +122,15 @@ func (c *canvas) put(x, y int, g string, w int, st style) {
 	}
 	if c.cells != nil {
 		*c.cells += w
+	}
+	// Line.Set breaks up a wide cell only where it writes the lead. The
+	// tail of a wide grapheme can land on the lead of another wide one,
+	// whose placeholder would then be orphaned and the row one cell short,
+	// so blank each cell under the tail first.
+	for k := 1; k < w; k++ {
+		if under := line.At(x + k); under != nil && under.Width != 1 {
+			line.Set(x+k, nil)
+		}
 	}
 	line.Set(x, &cell)
 }
@@ -163,7 +172,7 @@ func (c *canvas) textRight(right, y int, s string, st style) int {
 
 // hline draws n copies of a one-cell glyph.
 func (c *canvas) hline(x, y, n int, g string, st style) {
-	for i := 0; i < n; i++ {
+	for i := range n {
 		c.put(x+i, y, g, 1, st)
 	}
 }

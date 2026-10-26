@@ -1,4 +1,4 @@
-// Ported from pele src/diagrams/kanban/db.ts at 8fad23bd51783e4df1204e177a7fb0d2a30dcd13.
+// Ported from pele src/diagrams/kanban/db.ts at 4eff76f98c73b6817800a05773517f35832e4e92.
 //
 // An optional field of pele's node is "" here for none: pele reads each of them only
 // for its truthiness or as text.

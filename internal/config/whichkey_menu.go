@@ -96,6 +96,7 @@ var windowMenuRows = []menuRow{
 	{parts: []menuPart{{"window_prefix_next", "Next window"}}, desc: "Next window"},
 	{parts: []menuPart{{"window_prefix_prev", "Previous window"}}, desc: "Previous window"},
 	{parts: []menuPart{{"window_prefix_tiling", "Toggle tiling mode"}}, desc: "Toggle tiling mode"},
+	{parts: []menuPart{{"window_prefix_float", "Float or tile the pane"}}, desc: "Float or tile the pane"},
 	{parts: []menuPart{{"split_vertical", "Split right"}}, desc: "Split right"},
 	{parts: []menuPart{{"split_horizontal", "Split down"}}, desc: "Split down"},
 	{parts: []menuPart{{"prefix_fullscreen", "Toggle zoom"}}, desc: "Toggle zoom"},
@@ -182,9 +183,12 @@ var leaderPaneRows = []menuRow{
 // and quit rows menuSections adds for the session kind.
 var leaderSessionRows = []menuRow{
 	{parts: []menuPart{{"prev_session", "Previous session"}, {"next_session", "Next session"}}, desc: "Prev/next session"},
-	{parts: []menuPart{{"prefix_session_switcher", "Sessions"}}, desc: "Sessions"},
+	// The worktree key shares the switcher's row: a row more makes the
+	// leader's menu too tall for a 120x40 screen.
+	{parts: []menuPart{{"prefix_session_switcher", "Sessions"}, {"new_worktree", "New worktree"}}, desc: "Sessions/new worktree"},
 	{parts: []menuPart{{"prefix_workspace_switcher", "Workspaces"}}, desc: "Workspaces"},
 	{parts: []menuPart{{"choose_tree", "Find a pane"}}, desc: "Find a pane"},
+	{parts: []menuPart{{"goto_picker", "Go to anything"}}, desc: "Go to anything"},
 	{parts: []menuPart{{"prefix_close_session", "Close session"}}, desc: "Close session"},
 	{parts: []menuPart{{"toggle_scratch", "Scratch session"}}, desc: "Scratch session"},
 	{parts: []menuPart{{"last_session", "Last session"}}, desc: "Last session"},
@@ -292,7 +296,7 @@ func menuSections(prefixType string, st MenuState) []menuSection {
 		copyRow,
 		// The scrollback browser and the paste buffer list share one for
 		// the same reason.
-		pair("Scrollback/buffers", part("prefix_scrollback", "Scrollback browser"), part("choose_buffer", "Paste buffers")),
+		pair("Scrollback/editor/buffers", part("prefix_scrollback", "Scrollback browser"), part(ActionEditScrollback, "Scrollback in editor"), part("choose_buffer", "Paste buffers")),
 		// One row for two keys: the leader's menu fills an 80x24 screen,
 		// and a row more pushes it off the bottom.
 		sidebarRow,
@@ -582,8 +586,8 @@ func KeyLabel(key string) string {
 	}
 	parts := strings.Split(key, "+")
 	// "ctrl++" is ctrl and the plus key.
-	if strings.HasSuffix(key, "++") {
-		parts = append(strings.Split(strings.TrimSuffix(key, "++"), "+"), "+")
+	if before, ok := strings.CutSuffix(key, "++"); ok {
+		parts = append(strings.Split(before, "+"), "+")
 	}
 	for i, p := range parts {
 		if name, ok := keyNames[strings.ToLower(p)]; ok {

@@ -14,6 +14,29 @@ buf := s.Render(80, 24)
 fmt.Print(buf.Render()) // ANSI; buf.String() gives plain text
 ```
 
+## Command line
+
+`tml` shows a TML document in the terminal, drawn by loom.
+
+```sh
+go install tuios.dev/loom/cmd/tml@latest
+```
+
+```sh
+tml dashboard.tml                       # full screen, with keys and the mouse
+tml --print --width 100 report.tml      # draw once, as text
+tml --check report.tml                  # print each problem in the document
+answer=$(tml confirm.tml)               # the value of close(), as JSON
+```
+
+- In a terminal the document opens full screen. Press `q` or `esc` to quit
+  when the document does not use the key, or `ctrl+c` at any time.
+- A `close` action quits and prints its value as JSON. A `copy` action copies
+  with OSC 52. `emit`, `open`, `pane` and links need a host such as tuios, so
+  they do nothing here.
+- When the output is not a terminal, or with `--print`, `tml` draws the
+  document once and writes it as text.
+
 ## What it draws
 
 | Group | Components |
@@ -24,9 +47,20 @@ fmt.Print(buf.Render()) // ANSI; buf.String() gives plain text
 | Charts | `bar`, `line`, `area`, `sparkline`, `gauge`, `progress`, `histogram`, `heatmap`, `pie`, through [tuios.dev/plot](https://pkg.go.dev/tuios.dev/plot) |
 | Containers | `card`, `tabs`, `modal` (in place), `toast` |
 | Status | `badge`, `status`, `spinner`, `button` |
-| Forms | The fields show their label and value. Editing comes later. |
+| Forms | `input` and `textarea` take typed text, with a caret and the readline keys. `submit` buttons and `enter` in an input run the form's `on-submit`. The other fields show their label and value. |
 
-`markdown`, `diff` and `mermaid` show their source. `image` shows its alt text.
+`mermaid` draws the diagram as text through
+[tuios.dev/sketch](https://pkg.go.dev/tuios.dev/sketch), fitted to the width,
+in the theme's roles. A diagram taller than its box scrolls with the wheel. A
+diagram wider than the box at its narrowest layout is cut at the right edge,
+under a note. A diagram that sketch cannot draw shows its source as code,
+under a note that says why. loom keeps each drawing by source and width, so a
+redraw does no layout.
+
+A long `kv` value wraps under its value column. `table` cells and `stat`
+tiles stay on one row and end in an ellipsis when they are cut.
+
+`markdown` and `diff` show their source. `image` shows its alt text.
 Nothing is left out without a mark.
 
 Columns and areas get an axis when they have the room. A line with more than
@@ -41,11 +75,24 @@ Layout works like flex boxes for cells. `w` and `h` take cells, a percentage,
 tables, lists, text, cards and tabs give rows back first. A box never draws
 outside its parent.
 
+A document taller than its surface scrolls as a page. When the column is
+short, tables, lists and scroll boxes give rows back first. When text, a
+card or another box would still be cut, loom lays the document out on a
+taller page and shows one window of it, with a scroll bar in the last
+column. The page offset is view state (`View.Page`), so it stays across
+patches, replaces and resizes, and loom clamps it when the document gets
+shorter. A fragment, such as a dock cell, never scrolls as a page.
+
 A row that holds a button wraps when its children do not fit side by side:
 whole buttons go to the next line instead of a cut label. A spacer goes with
 the child after it, so a hint at the right stays at the right on its line.
 
-A binding can read `view.width`, `view.height` and `view.band`. The band is
+A binding can read `view.width`, `view.height`, `view.band` and
+`view.placement`. The host sets the placement with `Options.Placement` or
+`SetPlacement`. tuios sets `popup` for a popup and `pane` for a pane, and
+the `tml` command sets `popup`. Use it to show only the keys that work, such
+as `<text if="view.placement == 'popup'">esc close</text>`, since esc
+closes a popup and not a pane. The band is
 `narrow` below 72 cells, `medium` below 120 and `wide` from 120. Use it to
 change the layout with the width, such as `if="view.band == 'wide'"`.
 
@@ -77,9 +124,23 @@ to a budget.
 `set` and `toggle` run at once, with no round trip to the owner. `emit`,
 `close`, `copy`, `open` and `pane` come back to your program as `Effects`.
 
-A button's `key` works from anywhere on the surface. `tab` and `shift+tab`
-move the focus. The focused table or list takes the arrow keys, `enter` and
-`s` (sort by the next column).
+A button's `key` works from anywhere on the surface, except while a text
+field has the focus. `tab` and `shift+tab` move the focus. The focused table
+or list takes the arrow keys, `enter` and `s` (sort by the next column).
+
+On a page that does not fit, the keys the focused box does not take move
+the page: `up`, `down`, `k`, `j`, `pgup`, `pgdown`, `space`, `home`, `end`,
+`g` and `G`. They come before the root's `on-key`. The wheel over a box that
+does not scroll moves the page three rows. When the focused box takes a key,
+or `tab` moves the focus, the page brings the focus into view.
+
+A text field takes the focus from `tab` or a click, never by default. It then
+takes every key that types or edits: printable keys, `space`, `backspace`,
+`delete`, `left`, `right`, `home`, `end`, `ctrl+a`, `ctrl+e`, `ctrl+b`,
+`ctrl+f`, `ctrl+u`, `ctrl+k`, `ctrl+w` and `alt+backspace`. `Paste` puts text
+at the caret. `enter` submits the form in an input and starts a line in a
+textarea. `esc` leaves the field. A field with `bind` writes that state path;
+one without keeps its text in the view, where `form.NAME` reads it.
 
 ## Links and time
 

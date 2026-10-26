@@ -48,6 +48,7 @@ func buildHerdrPluginMethods() map[string]herdrPluginMethod {
 			return d.herdrPluginSetEnabled(cs, p, false)
 		},
 		"plugin.restart":       (*Daemon).herdrPluginRestart,
+		"plugin.approve":       (*Daemon).herdrPluginApprove,
 		"plugin.action.list":   (*Daemon).herdrPluginActionList,
 		"plugin.action.invoke": (*Daemon).herdrPluginActionInvoke,
 		"plugin.log.list":      (*Daemon).herdrPluginLogList,
@@ -118,6 +119,9 @@ type herdrPluginIn struct {
 	Env        map[string]string   `json:"env"`
 	PaneID     string              `json:"pane_id"`
 	Source     *herdrplugin.Source `json:"source"`
+	// ClosePanes, on plugin.disable, closes the plugin's open panes too.
+	// tuios plugins uninstall sets it, because it removes their folder.
+	ClosePanes bool `json:"close_panes"`
 }
 
 func decodePluginIn(params json.RawMessage, required ...string) (*herdrPluginIn, *herdrError) {
@@ -226,7 +230,39 @@ func (d *Daemon) herdrPluginSetEnabled(cs *connState, params json.RawMessage, on
 	if on {
 		kind = "plugin_enabled"
 	}
-	return map[string]any{"type": kind, "plugin": pluginRecord(*e)}, nil
+	res := map[string]any{"type": kind, "plugin": pluginRecord(*e)}
+	if !on && in.ClosePanes {
+		res["panes_closed"] = d.closePluginPanes(cs, id)
+	}
+	return res, nil
+}
+
+// closePluginPanes closes the open panes plugin id opened, and returns how
+// many it closed. A pane that will not close is logged and forgotten.
+func (d *Daemon) closePluginPanes(cs *connState, id string) int {
+	h := d.plugins
+	h.mu.Lock()
+	var wins []string
+	for w, p := range h.panes {
+		if p.pluginID == id {
+			wins = append(wins, w)
+		}
+	}
+	h.mu.Unlock()
+	closed := 0
+	for _, w := range wins {
+		if sess := d.sessionHoldingWindow(w); sess != nil {
+			if _, herr := d.herdrVerb(cs, "close-window", herdrWin(sess, w), "pane_close_failed"); herr != nil {
+				log.Printf("[PLUGINS] the pane %s of %s did not close: %s", w, id, herr.msg)
+			} else {
+				closed++
+			}
+		}
+		h.mu.Lock()
+		delete(h.panes, w)
+		h.mu.Unlock()
+	}
+	return closed
 }
 
 func cmpHerr(a, b *herdrError) *herdrError {
@@ -517,7 +553,7 @@ func (d *Daemon) herdrPluginLogList(cs *connState, params json.RawMessage) (any,
 var pluginPaneProtected = []string{
 	"HERDR_SOCKET_PATH", "HERDR_ENV", "HERDR_PLUGIN_ID", "HERDR_PLUGIN_ROOT",
 	"HERDR_PLUGIN_CONFIG_DIR", "HERDR_PLUGIN_STATE_DIR", "HERDR_PLUGIN_ENTRYPOINT_ID",
-	"HERDR_PLUGIN_CONTEXT_JSON", "HERDR_BIN_PATH",
+	"HERDR_PLUGIN_CONTEXT_JSON", "HERDR_BIN_PATH", "TUIOS_PLUGIN_ID", "TUIOS_PLUGIN_TOKEN",
 }
 
 // overlaySize is the popup size of an overlay pane: herdr draws an overlay
@@ -649,7 +685,14 @@ func (d *Daemon) herdrPluginPaneOpen(cs *connState, params json.RawMessage) (any
 		}
 	}
 	env = append(env, "PWD="+cwd)
-	env = append(env, d.plugins.baseEnv(e.Plugin, dirs)...)
+	// A plugin's pane is held by its pane grants, which are no more than
+	// the plugin's. It gets no plugin token: a tuios in it that talks to
+	// another daemon would present a token that daemon cannot prove.
+	for _, kv := range d.plugins.baseEnv(e.Plugin, dirs) {
+		if k, _, _ := strings.Cut(kv, "="); k != "TUIOS_PLUGIN_ID" && k != "TUIOS_PLUGIN_TOKEN" {
+			env = append(env, kv)
+		}
+	}
 	env = append(env, "HERDR_PLUGIN_ENTRYPOINT_ID="+pane.ID, "HERDR_PLUGIN_CONTEXT_JSON="+string(ctxJSON))
 
 	argv := slices.Clone(pane.Command)

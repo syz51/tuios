@@ -46,7 +46,10 @@ func (m *OS) renderOverlays() []*lipgloss.Layer {
 	// placed beside the meters it behaves like, so the two cannot double up.
 	// An armed leader shows on the dock's mode pill when the dock has one.
 	// The badge stays the way to see it with the dock hidden.
-	prefixBadge := m.PrefixActive && !m.prefixPillShown()
+	// In lock mode the badge also says unlocked, for every menu the leader
+	// opens and for a menu held after a repeatable action.
+	unlockBadge := m.lockPillShown() && m.prefixArmed() && !m.prefixPillShown()
+	prefixBadge := (m.PrefixActive || unlockBadge) && !m.prefixPillShown()
 	if isRecording || prefixBadge {
 		// The reading comes from the clock component, so the badge and a clock
 		// cell on the dock can never disagree, and so the format is the one
@@ -57,6 +60,8 @@ func (m *OS) renderOverlays() []*lipgloss.Layer {
 
 		if isRecording {
 			statusText = config.TapeRecordingIndicator + " | " + currentTime
+		} else if unlockBadge {
+			statusText = "PREFIX " + m.Settings.GetDockLockIcon(false) + " | " + currentTime
 		} else if prefixBadge {
 			statusText = "PREFIX | " + currentTime
 		} else {
@@ -234,6 +239,11 @@ func (m *OS) renderOverlays() []*lipgloss.Layer {
 		}
 	}
 
+	if m.gotoPicker.open {
+		content, geo, rows := m.renderGotoPicker()
+		layers = m.placeOverlayPanel(layers, "goto", content, geo, rows)
+	}
+
 	if m.ShowWorkspaceSwitcher {
 		content, geo, rows := m.renderWorkspaceSwitcher()
 		layers = m.placeOverlayPanel(layers, "workspace", content, geo, rows)
@@ -327,6 +337,11 @@ func (m *OS) renderOverlays() []*lipgloss.Layer {
 	// rather than through the overlay panel stack. It is centred like the rest.
 	if content, geo, x, y, ok := m.renderRenameDialog(); ok {
 		m.renameHit = overlay.Rect{X0: x, Y0: y, X1: x + geo.Width, Y1: y + geo.Height}
+		m.renameClearHit = overlay.Rect{}
+		if renameHintClear < len(geo.Hints) && !geo.Hints[renameHintClear].Empty() {
+			r := geo.Hints[renameHintClear]
+			m.renameClearHit = overlay.Rect{X0: x + r.X0, Y0: y + r.Y0, X1: x + r.X1, Y1: y + r.Y1}
+		}
 		layers = append(layers, lipgloss.NewLayer(content).
 			X(x).Y(y).Z(config.ZIndexOverlayBase).ID("rename"))
 	}
@@ -397,6 +412,11 @@ func (m *OS) renderOverlays() []*lipgloss.Layer {
 	if m.WorktreePromptOpen() {
 		content, geo, rows := m.renderWorktreePrompt()
 		layers = m.placeOverlayPanel(layers, "worktreeprompt", content, geo, rows)
+	}
+
+	if m.PluginApprovalOpen() {
+		content, geo, rows := m.renderPluginApproval()
+		layers = m.placeOverlayPanel(layers, overlayKindPluginApproval, content, geo, rows)
 	}
 
 	if m.ShowHelp {

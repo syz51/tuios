@@ -107,7 +107,7 @@ and 1 for an error.`,
 			return runPaneView(sessionName, window, size == "follow")
 		},
 	}
-	cmd.Flags().StringVarP(&sessionName, "session", "s", "", "Target session (default: most recently active)")
+	cmd.Flags().StringVarP(&sessionName, "session", "s", "", "Target session (default: this pane's session, else the most recently active)")
 	cmd.Flags().StringVarP(&window, "window", "w", "", "The pane to show, by id or name")
 	cmd.Flags().StringVar(&size, "size", "follow", "follow: the pane takes this terminal's size when it can. pane: the pane keeps its size")
 	_ = cmd.RegisterFlagCompletionFunc("session", completeSessionNames)
@@ -408,8 +408,7 @@ func (v *paneView) reconnect() error {
 		if _, err = v.connect(); err == nil {
 			return nil
 		}
-		var perm *errPaneViewPermanent
-		if errors.As(err, &perm) {
+		if _, ok := errors.AsType[*errPaneViewPermanent](err); ok {
 			return err
 		}
 	}

@@ -353,25 +353,32 @@ type OS struct {
 	// new pane is not built locally; it arrives later through a state sync. These
 	// remember which side of which pane the split was meant for so the sync path
 	// can honor the direction instead of falling back to the spiral scheme.
-	pendingSplitDir        layout.PreselectionDir
-	pendingSplitTarget     string
-	WindowToBSPID          map[string]int                // Maps window UUID to stable BSP integer ID
-	BSPIDToWindowID        map[int]string                // Reverse of WindowToBSPID: BSP integer ID to window UUID (speed-up for GetWindowByIntID)
-	NextBSPWindowID        int                           // Next BSP window ID to assign (starts at 1)
-	RenameKind             RenameKind                    // What the open rename editor targets (RenameNone when closed)
-	RenameBuffer           string                        // Buffer for new window name
-	RenameTargetID         string                        // Window the rename in flight applies to
-	renameHit              overlay.Rect                  // Where the dialog was drawn, in screen cells
-	PrefixActive           bool                          // True when prefix key was pressed (tmux-style)
-	WorkspacePrefixActive  bool                          // True when Ctrl+B, w was pressed (workspace sub-prefix)
-	MinimizePrefixActive   bool                          // True when Ctrl+B, m was pressed (minimize sub-prefix)
-	TilingPrefixActive     bool                          // True when Ctrl+B, t was pressed (tiling/window sub-prefix)
-	DebugPrefixActive      bool                          // True when Ctrl+B, D was pressed (debug sub-prefix)
-	LastPrefixTime         time.Time                     // Time when prefix was activated
-	HelpScrollOffset       int                           // Scroll offset for help menu
-	HelpCategory           int                           // Current help category index (for left/right navigation)
-	HelpSearchMode         bool                          // True when help search is active
-	HelpSearchQuery        string                        // Current search query in help menu
+	pendingSplitDir       layout.PreselectionDir
+	pendingSplitTarget    string
+	WindowToBSPID         map[string]int // Maps window UUID to stable BSP integer ID
+	BSPIDToWindowID       map[int]string // Reverse of WindowToBSPID: BSP integer ID to window UUID (speed-up for GetWindowByIntID)
+	NextBSPWindowID       int            // Next BSP window ID to assign (starts at 1)
+	RenameKind            RenameKind     // What the open rename editor targets (RenameNone when closed)
+	RenameBuffer          string         // Buffer for new window name
+	RenameTargetID        string         // Window the rename in flight applies to
+	renameHit             overlay.Rect   // Where the dialog was drawn, in screen cells
+	renameClearHit        overlay.Rect   // Where its clear hint was drawn, in screen cells
+	PrefixActive          bool           // True when prefix key was pressed (tmux-style)
+	WorkspacePrefixActive bool           // True when Ctrl+B, w was pressed (workspace sub-prefix)
+	MinimizePrefixActive  bool           // True when Ctrl+B, m was pressed (minimize sub-prefix)
+	TilingPrefixActive    bool           // True when Ctrl+B, t was pressed (tiling/window sub-prefix)
+	DebugPrefixActive     bool           // True when Ctrl+B, D was pressed (debug sub-prefix)
+	LastPrefixTime        time.Time      // Time when prefix was activated
+	// LockHeld is true while lock mode keeps a menu open after a repeatable
+	// action, until esc. See lock_mode.go.
+	LockHeld         bool
+	HelpScrollOffset int    // Scroll offset for help menu
+	HelpCategory     int    // Current help category index (for left/right navigation)
+	HelpSearchMode   bool   // True when help search is active
+	HelpSearchQuery  string // Current search query in help menu
+	// helpBackToAgents says the help was opened from the agents view, which
+	// opens again when the help closes. See HelpClosed.
+	helpBackToAgents       bool
 	CurrentWorkspace       int                           // Current active workspace (1-9)
 	NumWorkspaces          int                           // Total number of workspaces
 	WorkspaceFocus         map[int]int                   // Remembers focused window per workspace
@@ -381,6 +388,8 @@ type OS struct {
 	WorkspaceMasterRatio   map[int]float64               // Stores master ratio per workspace
 	WorkspaceStackRatio    map[int]float64               // Stack ratio per workspace, the only copy (see setWorkspaceStackRatio)
 	WorkspaceMasterSplits  map[int]layout.MasterSplits   // Every other master-stack split per workspace, the only copy (see SyncMasterStackFromGeometry)
+	WorkspaceLayoutMode    map[int]string                // Layout mode chosen per workspace; no entry follows the session's
+	sessionLayoutMode      string                        // The mode the session was created with, the fallback for a workspace the state did not count
 	ShowLogs               bool                          // True when showing log overlay
 	LogMessages            []LogMessage                  // Store log messages
 	LogScrollOffset        int                           // first log row the viewer draws
@@ -441,6 +450,17 @@ type OS struct {
 	// name another pane. "" is no pane.
 	SessionCloseWindow   string
 	SessionCloseSelected int
+	// SessionCloseWorktreeToll is what the delete-worktree row would take, read
+	// by a round trip after the dialog opened. Nil, or Loaded false, is a toll
+	// that has not landed yet, and the dialog says nothing about the worktree
+	// until it has: a count it does not have is a count it must not invent.
+	SessionCloseWorktreeToll *worktreeToll
+	// pendingWorktreeKill makes the next SessionKilledMsg a silent one: the
+	// worktree-deletion note is on screen and is the one record of where the
+	// stashed changes went, so the kill's own "Killed session" note would
+	// replace it with less news. Set only when KillOtherSession will actually
+	// post, and read once, by the kill handler.
+	pendingWorktreeKill bool
 	// Pending resize tracking for debouncing PTY resize during mouse drag
 	PendingResizes map[string][2]int // windowID -> [width, height] of pending PTY resize
 	// pendingCopy is text a settled multi-click selection will put on the
@@ -512,16 +532,18 @@ type OS struct {
 	// themeFx is the running theme transition, if any. See
 	// theme_transition.go.
 	themeFx themeTransition
-	// lastInteractionRender is when a drag/resize motion event last produced a
-	// frame. Motion events arrive faster than a frame can be composed, so this
+	// lastInteractionRender is when a motion event last produced a frame.
+	// Motion events arrive faster than a frame can be composed, so this
 	// bounds how often they are allowed to redraw.
 	lastInteractionRender time.Time
-	// spotlightMotionPending is set when a mouse-anchored spotlight dropped a
-	// motion frame to the frame budget. It is the one term that flushes that
-	// position, because the beam has no tick of its own. False whenever the
-	// beam is off or the pointer is at rest, which is what keeps the idle tick
-	// idle. See update.go.
-	spotlightMotionPending bool
+	// frameWritten is when the renderer last finished writing a frame. See
+	// motionBudgetFrom.
+	frameWritten frameWrittenClock
+	// pointerMotionPending is set when a motion event dropped its frame to the
+	// frame budget. It is the term that flushes that position: hover and the
+	// mouse-anchored beam have no tick of their own. False whenever the pointer
+	// is at rest, which is what keeps the idle tick idle. See update.go.
+	pointerMotionPending bool
 	// viewportResizing is set while terminal sizes are still arriving. A retile
 	// it drives places panes directly instead of easing them into position, and
 	// resizes them visually only, exactly as a mouse resize drag does: a resize
@@ -628,6 +650,11 @@ type OS struct {
 	// Reused per-frame scratch for graphics placement refresh (avoids per-frame allocs)
 	kittyPosMap     map[string]*WindowPositionInfo // Reused map for kitty placement refresh
 	kittyPosBacking []WindowPositionInfo           // Backing storage for kittyPosMap values
+	// kittyChrome is the rectangle of every chrome layer the last composed
+	// frame drew above all panes: popovers, dialogs, the rail, the dock,
+	// tooltips. A kitty image is painted by the host over the finished frame,
+	// so it is cut around these. Reused across frames.
+	kittyChrome []cellRect
 	// Scrollback lengths snapshotted before a placement refresh takes the
 	// passthrough lock. The refresh callbacks run under kp.mu/sp.mu and must
 	// not take a window's ioMu there: the PTY reader holds ioMu while
@@ -772,21 +799,36 @@ type OS struct {
 	tailnetMu         sync.Mutex
 	tailnetAskedAt    time.Time
 	tailnetCandidates []string
+	// The [tailscale] table as last read, and the version of the config file
+	// it was read from. See tailnetOptionsCached.
+	tailnetOpt        federation.TailnetOptions
+	tailnetOptEnabled bool
+	tailnetOptKey     tailnetFileKey
+	tailnetOptValid   bool
 	// SessionWorktree is the attached session's daemon-owned worktree record,
 	// nil when its directory is not a linked git worktree. Every other
 	// session's arrives with the cached listing; this one comes down with the
 	// session state, so the rail reads the attached row from live state exactly
 	// as it reads the rest of that row.
 	SessionWorktree *session.WorktreeInfo
-	// WorkspaceNames maps a workspace number to its daemon-owned label. The
-	// number stays the workspace's identity and is what an unnamed workspace
-	// shows, so an absent entry is not a missing label but the normal case.
+	// WorkspaceNames maps a workspace number to its daemon-owned label. An
+	// unnamed workspace shows its number, so an absent entry is not a missing
+	// label but the normal case.
 	WorkspaceNames map[int]string
-	// WorkspaceOrder is the daemon-owned order the workspaces are shown in. It
-	// arranges and never addresses: the number stays the identity, so nothing
-	// keyed by one moves when this does. Empty is the plain ascending order.
-	WorkspaceOrder    []int
-	RestoredFromState bool // True after RestoreFromState, cleared after first resize
+	// pendingWorkspaceOrder is the order a drag of the dock's pills dropped
+	// them in, shown until the daemon's renumber arrives, so the strip does
+	// not snap back for the length of the round trip. See workspace_order.go.
+	pendingWorkspaceOrder []int
+	// workspaceTabKeys is the session's herdr tab keys as this client last
+	// adopted them, which is what a renumber is read against. See
+	// adoptWorkspaceRenumbering. workspaceTabKeysKnown is false until a state
+	// has been adopted.
+	workspaceTabKeys      map[int]int
+	workspaceTabKeysKnown bool
+	// workspaceMoveInFlight is set while a renumber this client asked for has
+	// not come back in a state. See RenumberWorkspaces.
+	workspaceMoveInFlight bool
+	RestoredFromState     bool // True after RestoreFromState, cleared after first resize
 	// DaemonStateVersion is the daemon state version this client last saw. It is
 	// echoed back on every state sync so the daemon can tell a snapshot built
 	// from its current state apart from one built before a mutation of its own.
@@ -1081,13 +1123,15 @@ type OS struct {
 	ScriptAwaitWindows  int
 	ScriptAwaitDeadline time.Time
 	// Tape manager UI
-	ShowTapeManager    bool              // True when showing tape manager overlay
-	TapeManager        *TapeManagerState // Tape manager state
-	TapeRecorder       *tape.Recorder    // Tape recorder for recording sessions
-	TapeRecordingName  string            // Name of current recording
-	TapePrefixActive   bool              // True when Ctrl+B, T was pressed (tape sub-prefix)
-	TuiosPrefixActive  bool              // True when the tuios menu is open (leader, then prefix_tuios's key)
-	LayoutPrefixActive bool              // True when Ctrl+B, L was pressed (layout sub-prefix)
+	ShowTapeManager   bool              // True when showing tape manager overlay
+	TapeManager       *TapeManagerState // Tape manager state
+	TapeRecorder      *tape.Recorder    // Tape recorder for recording sessions
+	TapeRecordingName string            // Name of current recording
+	TapePrefixActive  bool              // True when Ctrl+B, T was pressed (tape sub-prefix)
+	TuiosPrefixActive bool              // True when the tuios menu is open (leader, then prefix_tuios's key)
+	// Menu is the declared menu open now (see config.MenuConfig), "" when none is.
+	Menu               string
+	LayoutPrefixActive bool // True when Ctrl+B, L was pressed (layout sub-prefix)
 	// MouseOff is set by toggle_mouse: the client stops asking the host for
 	// mouse reports, so the host terminal selects text itself, as tmux's
 	// mouse off does.
@@ -1236,6 +1280,9 @@ type OS struct {
 	// replyEditorDir is the private folder of the file $EDITOR has open for
 	// a draft, removed when it closes. See inbox_reply_history.go.
 	replyEditorDir string
+	// scrollbackEditorDir is the private folder of the scrollback file the
+	// editor has open, removed when it closes. See os_selection.go.
+	scrollbackEditorDir string
 	// launcherIconCells is where the last frame put each row's icon, in
 	// panel-relative cells, for the flush that follows the frame.
 	launcherIconCells []launcherIconPlacement
@@ -1332,6 +1379,9 @@ type OS struct {
 	// navigator is the pane navigator (choose_tree) while it is up. See
 	// navigator.go.
 	navigator navigatorState
+	// gotoPicker is the go-to picker (goto_picker), and the places the
+	// client has been. See goto_picker.go.
+	gotoPicker gotoPickerState
 	// navLayoutPick is the navigator layout the v key last chose, kept for
 	// the next time the navigator opens. Empty is the configured one.
 	navLayoutPick string
@@ -1583,6 +1633,11 @@ type OS struct {
 	// sections, which is every frame nobody has asked for a listing. See
 	// sidebar_files.go.
 	filesView fileViewState
+	// filesTree is the files section's tree: the open folders per session and
+	// the listing of each one on screen. See sidebar_files_tree.go.
+	filesTree fileTreeState
+	// filesRows is the files section's rows, kept until the listing moves.
+	filesRows fileRowsCache
 
 	// gitView is the rail's git section: the repository the focused pane is in
 	// and how far its branch has drifted. Derived state, never persisted and
@@ -1600,6 +1655,13 @@ type OS struct {
 	// repository, whose enter hands the daemon's new-worktree verb a command.
 	// Zero when it is closed, the way filePrompt is. See worktree_prompt.go.
 	worktreePrompt worktreePromptState
+	// pluginApproval is the dialog that asks the person about a native
+	// plugin that waits for approval. See plugin_approval.go.
+	pluginApproval pluginApprovalState
+	// pressingTapeKeys is true while a tape's Press runs keys through the
+	// input handler (PressKeys). Those keys are not the person's: the
+	// plugin approval dialog ignores them.
+	pressingTapeKeys bool
 	// fileClip is what a copy or a cut in the files section captured, waiting
 	// for a paste. It holds paths and no bytes, so it costs nothing to carry.
 	fileClip fileClipboard
@@ -1787,6 +1849,13 @@ type OS struct {
 	sidebarFollowFile     bool
 	sidebarFollowFileName string
 	sidebarFollowFileGen  uint64
+	// sidebarCursorWant is a row the cursor was moved to that the last frame
+	// may not have drawn: the next name of a files section scrolled past it,
+	// or the folder a tree row belongs to. The next nav build scrolls the
+	// section to it and puts the cursor there. Until then it is the cursor
+	// row every key acts on. See sidebarWantCursor.
+	sidebarCursorWant    sidebarNavRow
+	sidebarCursorWantSet bool
 	// zoomRelayout asks the next retile to slide its panes rather than place
 	// them, because the zoom has just moved and the whole layout is going
 	// somewhere new.
@@ -2251,6 +2320,7 @@ func (m *OS) Cleanup() {
 	// The copy of an image the desktop viewer was given.
 	m.replyPreview.removeOpened()
 	m.removeReplyEditorFile()
+	m.removeScrollbackEditorFile()
 	m.stopWindowExitDrain()
 	m.endConfigWatch()
 	m.endOmarchyFollow()

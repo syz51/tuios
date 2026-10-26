@@ -135,7 +135,8 @@ type CommandPaletteItem struct {
 	// for a session the pane its state was rolled up from, which draws a
 	// pane at rest as waiting.
 	AgentSubagents int
-	// Keybind marks a row that names one action to rebind. Those rows are
+	// Keybind marks a row that names one action, which enter runs and
+	// PaletteRebindKey rebinds. Those rows are
 	// reached only behind the "#" token and are hidden from every other query,
 	// which is what keeps a few hundred of them out of a list of twenty
 	// commands. See splitPaletteKeybinds.
@@ -851,10 +852,20 @@ func GetCommandPaletteItems(s *config.Settings) []CommandPaletteItem {
 		},
 		// Scrollback
 		{
-			Name:     "Edit scrollback in $EDITOR",
+			Name:     "Edit the scrollback in the editor",
+			Shortcut: "prefix+E",
+			Bind:     config.ActionEditScrollback,
 			Category: "Window",
 			Action: func(m *OS) (*OS, tea.Cmd) {
 				return m, m.EditScrollbackInEditor()
+			},
+		},
+		{
+			Name:     "Clear the scrollback",
+			Bind:     config.ActionClearScrollback,
+			Category: "Window",
+			Action: func(m *OS) (*OS, tea.Cmd) {
+				return m, m.ClearScrollback()
 			},
 		},
 		// Floating
@@ -929,6 +940,13 @@ func GetCommandPaletteItems(s *config.Settings) []CommandPaletteItem {
 			Action: func(m *OS) (*OS, tea.Cmd) {
 				m.OpenThemePicker()
 				return m, nil
+			},
+		},
+		{
+			Name:     "Choose a look",
+			Category: "Session",
+			Action: func(m *OS) (*OS, tea.Cmd) {
+				return m, m.OpenLookPicker()
 			},
 		},
 		{
@@ -1138,6 +1156,26 @@ func GetCommandPaletteItems(s *config.Settings) []CommandPaletteItem {
 			Category: "Session",
 			Action: func(m *OS) (*OS, tea.Cmd) {
 				return m, m.OpenNavigator()
+			},
+		},
+		{
+			Name:     "Go to: an agent, session, workspace or pane",
+			Shortcut: "prefix+G",
+			Bind:     "goto_picker",
+			Category: "Session",
+			Action: func(m *OS) (*OS, tea.Cmd) {
+				m.OpenGotoPicker()
+				return m, nil
+			},
+		},
+		{
+			Name:     "New worktree: a branch and a session in this pane's repository",
+			Shortcut: "prefix+U",
+			Bind:     "new_worktree",
+			Category: "Session",
+			Action: func(m *OS) (*OS, tea.Cmd) {
+				m.BeginWorktreePromptForFocusedPane()
+				return m, nil
 			},
 		},
 		{

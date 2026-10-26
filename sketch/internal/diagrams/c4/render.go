@@ -1,4 +1,4 @@
-// Ported from pele src/diagrams/c4/render.ts at 8fad23bd51783e4df1204e177a7fb0d2a30dcd13.
+// Ported from pele src/diagrams/c4/render.ts at 4eff76f98c73b6817800a05773517f35832e4e92.
 
 package c4
 
@@ -281,7 +281,7 @@ func draw(db *C4Db, _ types.Config, options types.RenderOptions, tight bool, gap
 			techn = "[" + rel.techn + "]"
 		}
 		technLabel := text.LayoutLabel(techn, false, measurer, small, r.room, text.Italic)
-		lw := math.Max(label.Width, technLabel.Width) + 8
+		lw := math.Max(label.Width, technLabel.Width) + LABEL_PAD
 		lh := label.Height + technLabel.Height
 		if lh == 0 {
 			continue

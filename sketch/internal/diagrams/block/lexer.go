@@ -1,4 +1,4 @@
-// Ported from pele src/diagrams/block/lexer.ts at 8fad23bd51783e4df1204e177a7fb0d2a30dcd13.
+// Ported from pele src/diagrams/block/lexer.ts at 4eff76f98c73b6817800a05773517f35832e4e92.
 //
 // The port reads UTF-8 bytes. Every character the lexer matches is ASCII, except
 // whitespace, which is read as a whole character. A byte offset stands for pele's unit

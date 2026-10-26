@@ -106,6 +106,7 @@ func ValidateConfig(cfg *UserConfig) *ValidationResult {
 	for _, section := range keySections(&cfg.Keybindings) {
 		validateSection(section.name, section.keys)
 	}
+	validateMenus(cfg, result)
 
 	// Validate enum appearance options (warn on unknown values; they fall back to defaults)
 	validateAppearanceEnums(cfg, result)
@@ -305,6 +306,7 @@ func validateNotificationsConfig(cfg *UserConfig, result *ValidationResult) {
 	check("duration", cfg.Notifications.Duration)
 	check("warning_duration", cfg.Notifications.WarningDuration)
 	check("error_duration", cfg.Notifications.ErrorDuration)
+	warnEnum(result, "notifications", "bell", cfg.Notifications.Bell, BellModes, BellToast)
 
 	agent := &cfg.Notifications.Agent
 	if _, _, err := ParseQuietHours(agent.QuietHours); err != nil {
@@ -388,6 +390,7 @@ func validateAppearanceEnums(cfg *UserConfig, result *ValidationResult) {
 		})
 	}
 	checkEnum("sidebar.folder_click", cfg.Appearance.Sidebar.FolderClick, SidebarFolderClicks)
+	checkEnum("sidebar.files_style", cfg.Appearance.Sidebar.FilesStyle, SidebarFilesStyles)
 	checkEnum("sidebar.file_delete", cfg.Appearance.Sidebar.FileDelete, SidebarFileDeletes)
 	validateSidebarSubagents(cfg.Appearance.Sidebar, result)
 	if cfg.Appearance.Sidebar.Workspaces != "" {
@@ -424,13 +427,14 @@ func validateAppearanceEnums(cfg *UserConfig, result *ValidationResult) {
 	validateTitleFormat(cfg.Appearance.WindowTitleFormat, result)
 	validateGlyphSet(cfg, result)
 	validateOmarchyTheme(cfg, result)
-	validateDimUnfocused(cfg, result)
 	validateClockFormat(cfg.Appearance.ClockFormat, result)
 	validateBorderColors(cfg, result)
 	validateSelectionColors(cfg, result)
 	validateScrollbar(cfg, result)
 	validateDockModeIcons(cfg, result)
 	validateBackgrounds(cfg, result)
+	warnColours(result, "appearance", "The cursor row keeps the theme's background",
+		"sidebar.cursor_background", cfg.Appearance.Sidebar.CursorBackground)
 }
 
 // validateBackgrounds warns about a background option that is neither a
@@ -513,26 +517,6 @@ func validateGlyphSet(cfg *UserConfig, result *ValidationResult) {
 	}
 }
 
-// validateDimUnfocused warns when the dim is asked for and cannot do its whole
-// job.
-//
-// With no theme set, tuios emits colour indices and the host terminal decides
-// what they look like, so a cell drawn in the terminal's own default has no RGB
-// here to carry anywhere. Those cells are left alone rather than guessed at,
-// which on a plain shell prompt is most of them, so the setting looks broken
-// unless somebody says this out loud.
-func validateDimUnfocused(cfg *UserConfig, result *ValidationResult) {
-	if cfg.Appearance.DimUnfocused <= 0 || theme.Themed(cfg.Appearance.Theme) {
-		return
-	}
-	result.Warnings = append(result.Warnings, ValidationError{
-		Field: "appearance",
-		Key:   "dim_unfocused",
-		Message: "no theme is set, so a cell drawn in the terminal's own default colour has no colour " +
-			"tuios knows and is left undimmed; only cells a program coloured itself are quieted",
-	})
-}
-
 // validateClockFormat warns about a layout that formats to nothing.
 //
 // Go's time layouts have no syntax to be wrong at: any string is a layout, and
@@ -593,6 +577,8 @@ func validateBorderColors(cfg *UserConfig, result *ValidationResult) {
 	a := &cfg.Appearance
 	warnColours(result, "appearance", "The border uses the theme colour",
 		"border_focused_color", a.BorderFocusedColor,
+		"border_focused_color_window", a.BorderFocusedColorWindow,
+		"border_focused_color_terminal", a.BorderFocusedColorTerminal,
 		"border_unfocused_color", a.BorderUnfocusedColor)
 	if a.BorderFocusedGradient == "" {
 		return
@@ -764,7 +750,7 @@ type keySection struct {
 
 // keySections are the keybinding tables ValidateConfig checks key by key.
 func keySections(kb *KeybindingsConfig) []keySection {
-	return []keySection{
+	sections := []keySection{
 		{"window_management", kb.WindowManagement},
 		{"workspaces", kb.Workspaces},
 		{"layout", kb.Layout},
@@ -794,6 +780,10 @@ func keySections(kb *KeybindingsConfig) []keySection {
 		{"lists", kb.Lists},
 		{"gui", kb.GUI},
 	}
+	for _, name := range kb.MenuNames() {
+		sections = append(sections, keySection{MenuSectionPrefix + name, kb.Menus[name].Keys})
+	}
+	return sections
 }
 
 // DroppedKey is one key DropUnreadableKeys took out of a config.

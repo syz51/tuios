@@ -94,7 +94,7 @@ func legendVocabulary(items []legendItem) map[string]bool {
 		for _, s := range it.short {
 			vocab[s] = true
 		}
-		for _, w := range strings.Fields(it.label) {
+		for w := range strings.FieldsSeq(it.label) {
 			vocab[w] = true
 		}
 	}
@@ -286,6 +286,7 @@ var copyLegendItems = []legendItem{
 	{key: "n/N", label: "next"},
 	{key: "v", label: "visual"},
 	{key: "y", label: "yank"},
+	{key: "ctrl+g", label: "edit"},
 	{key: "q/esc", label: "quit"},
 }
 

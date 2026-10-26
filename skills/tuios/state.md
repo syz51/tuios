@@ -16,8 +16,8 @@ tuios set-agent-state none -s "$TUIOS_SESSION" -w "$TUIOS_PANE_ID"    # clear it
 The states are `none`, `working`, `needs_input`, `idle`, `done`, `errored` and
 `unknown`. `unknown` is what the daemon writes to a pane it has lost track of:
 an agent is there and nothing says what it is doing, so `ask-agent` and `fan`
-do not type into it. With no `-w` the report lands on the focused window, which
-is wrong when you are not the focused pane.
+do not type into it. From inside a pane, a report with no `-s` and no `-w` is
+about that pane. From outside every pane, it lands on the focused window.
 
 `get-agent-state` and `list-agents` also report `needs_you` (true for
 `needs_input` and `errored`), `blocked_by` (`approval`, `question` or `auth`,
@@ -153,6 +153,11 @@ and gives up after 500ms, so a dead daemon never slows the harness.
 now runs the same reporter. Outside tuios, with `TUIOS_ENV` unset, it reports
 nothing.
 
+Pi's version 3 integration also tells Tuios which entry of the session tree Pi
+has selected, `/tree` changes included, so the Inbox shows that branch. Reload Pi
+after updating its managed integration. Only the person reads the conversation:
+this gives an agent no way to read another pane's transcript.
+
 To report the same things by hand from another harness's hooks:
 
 ```sh
@@ -221,7 +226,11 @@ Not applied: a higher-ranked source owns this pane. It still reports working.
 
 A script that must know whether its report took should match that line. Over
 the socket the result carries `applied: false` and a `reason` of `outranked`,
-`if_state`, `foreign_session` or `foreign_harness`.
+`if_state`, `foreign_pane`, `foreign_session` or `foreign_harness`.
+`foreign_pane` is a hook whose harness inherited the pane's `TUIOS_PANE_ID`
+but runs outside the pane under a harness daemon, such as a Claude Code
+background session. A harness in tmux or a container inside the pane is taken
+for that pane.
 
 ## Reading state back
 

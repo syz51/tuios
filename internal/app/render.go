@@ -24,7 +24,7 @@ func (m *OS) GetCanvas(render bool) *frameCanvas {
 	// already composed, so a client launched with ascii_only painted its first
 	// frame with unicode glyphs in the rail and only corrected itself on the
 	// next redraw.
-	syncOverlayASCII(&m.Settings)
+	syncOverlaySettings(&m.Settings)
 
 	// Reuse the canvas across frames. Allocating a fresh one each frame was the
 	// single largest source of allocations (a full-screen cell buffer per frame).
@@ -217,7 +217,7 @@ func (m *OS) GetCanvas(render bool) *frameCanvas {
 		isFocused := m.FocusedWindow == i && m.FocusedWindow >= 0 && m.FocusedWindow < len(m.Windows)
 		isMultifocused := len(m.MultifocusSet) > 0 && m.MultifocusSet[window.ID]
 		var borderColorObj color.Color
-		tint, quietTint, tinted := m.sessionBorderTint()
+		tint, tintTerminal, quietTint, tinted := m.sessionBorderTint()
 		var stateColor color.Color
 		if isFocused {
 			stateColor = m.focusedStateBorder(window)
@@ -227,10 +227,15 @@ func (m *OS) GetCanvas(render bool) *frameCanvas {
 			// Copy mode or an agent that waits, in a colour the theme names
 			// for it, outranks the mode and the session.
 			borderColorObj = stateColor
-		case isFocused && m.Mode == TerminalMode:
+		case isFocused && m.Mode == TerminalMode && tinted:
 			// The mode colour outranks the session's. This border says the keys
 			// are going into the guest, which is the more urgent fact and the
-			// one a person checks before typing.
+			// one a person checks before typing. It is held apart in lightness
+			// from the session's colour, which is the window mode border here,
+			// and is the louder of the two: a session that drew a green would
+			// otherwise look the same in both modes.
+			borderColorObj = tintTerminal
+		case isFocused && m.Mode == TerminalMode:
 			borderColorObj = theme.BorderFocusedTerminalOn(m.host.bg)
 		case isFocused && tinted:
 			borderColorObj = tint
@@ -443,6 +448,8 @@ func (m *OS) GetCanvas(render bool) *frameCanvas {
 
 		// The part of this client's pane area a smaller session leaves.
 		layers = m.renderLeftover(layers)
+
+		m.kittyChrome = chromeRectsAbovePanes(m.kittyChrome[:0], layers[paneLayers:])
 	} else {
 		// Off the render path (e.g. state snapshots) nothing draws the sidebar,
 		// so last frame's hit geometry must not linger and mis-route a click.
@@ -1097,6 +1104,9 @@ func (m *OS) chargeRenderCost(d time.Duration) {
 }
 
 func (m *OS) View() tea.View {
+	if renderTraceEnabled {
+		m.traceFrame()
+	}
 	var view tea.View
 	// composed is set when this call composed a frame that differs from the
 	// last one.
@@ -1164,6 +1174,9 @@ func (m *OS) View() tea.View {
 		// client with that section at about 110 context switches a second.
 		if content != m.cachedViewContent {
 			composed = true
+			if m.PostRenderWriter != nil {
+				m.PostRenderWriter.FrameComposed()
+			}
 		}
 		m.cachedViewContent = content
 		if composed && !m.quietFrame {
@@ -1172,11 +1185,16 @@ func (m *OS) View() tea.View {
 			// for this frame. See releaseEmulatorScratch.
 			m.emulatorReleasePending = true
 		}
-		// This frame carries the beam at the pointer's newest position, so the
-		// skipped move it was waiting for has been drawn. Cleared here rather
-		// than on the motion path so a frame composed for any other reason (a
-		// keystroke, pane output) counts too.
-		m.spotlightMotionPending = false
+		// This frame carries the hover and the beam at the pointer's newest
+		// position, so the skipped move it was waiting for has been drawn.
+		// Cleared here rather than on the motion path so a frame composed for
+		// any other reason (a keystroke, pane output) counts too, and it starts
+		// the motion frame budget over for the same reason.
+		//
+		// The budget runs from the end of the compose, not its start, and
+		// from the end of the write after that: see motionBudgetFrom.
+		m.pointerMotionPending = false
+		m.lastInteractionRender = time.Now()
 		m.zenHidden = m.zenBordersHidden(false)
 		view.SetContent(content)
 		return true
@@ -1251,6 +1269,11 @@ func (m *OS) View() tea.View {
 	// and prevents tearing between text and graphics updates.
 	if !m.renderSkipped {
 		m.flushGraphicsForView()
+		// A frame equal to the last one is not written, so nothing would
+		// carry what the graphics queued for it.
+		if !composed && m.PostRenderWriter != nil {
+			m.PostRenderWriter.FlushIfDrawn()
+		}
 	}
 
 	return view
@@ -1307,7 +1330,7 @@ func (m *OS) flushGraphicsForView() {
 	// of the drag. Hiding keeps the image data resident, so the gesture ending
 	// puts it back with no round trip to whatever drew it.
 	hideImages := m.Resizing || m.ShowHelp || m.ShowCommandPalette || m.ShowLauncher || m.ShowSessionSwitcher || m.ShowAgentMail || m.ShowInbox ||
-		m.ShowWorkspaceSwitcher || m.buffers.open || m.navigator.open || m.ShowLayoutPicker || m.ShowHostPicker || m.ShowQuitMenu || m.DaemonRestartOpen() || m.ShowScrollbackBrowser ||
+		m.ShowWorkspaceSwitcher || m.gotoPicker.open || m.buffers.open || m.navigator.open || m.ShowLayoutPicker || m.ShowHostPicker || m.ShowQuitMenu || m.DaemonRestartOpen() || m.ShowScrollbackBrowser ||
 		m.ShowLogs || m.msgView.open || m.ShowCacheStats || m.ShowAggregateView ||
 		m.ShowSettings || m.ShowThemePicker || m.themeEditor.open || m.presetPicker.open || m.ShowKeybindManager || m.ShowAccentPicker || m.ShowTapeManager || m.ShowTapeReview ||
 		m.ShotPreview.Open || m.review.open
@@ -1315,10 +1338,11 @@ func (m *OS) flushGraphicsForView() {
 		// Self-placed remote video images are hidden/dropped here, not by
 		// HideAllPlacements (they are not in `placements`).
 		m.KittyPassthrough.SetOverlayActive(hideImages)
-		// Chrome that leaves the panes showing. Set every frame, and nil
-		// once capture mode closes, so the images get their full rectangle
-		// back on the next refresh.
-		m.KittyPassthrough.SetChromeOccluders(m.pipOccluders(m.captureOccluders()))
+		// Chrome that leaves the panes showing: popovers, dialogs, the
+		// rail, the dock, capture mode's marquee. Set every frame from the
+		// layers the frame drew, so an image gets its full rectangle back on
+		// the refresh after the chrome closes.
+		m.KittyPassthrough.SetChromeOccluders(m.pipOccluders(m.kittyChrome))
 	}
 
 	// The launcher's own icons run past the hide above rather than through it.
@@ -1435,6 +1459,10 @@ func (m *OS) GetKittyGraphicsCmd() tea.Cmd {
 				if announcedW <= 0 || announcedH <= 0 {
 					announcedW, announcedH = w.ContentWidth(), w.ContentHeight()
 				}
+				// WindowZ is the rank the pane is drawn at, not its raw Z. A
+				// float or a popup is lifted into a band above every tile, so
+				// its raw Z can be below the Z of the tile it covers, and the
+				// image in that tile was then drawn over it.
 				backing[n] = WindowPositionInfo{
 					WindowX:            w.X + view.dx,
 					WindowY:            w.Y + view.dy,
@@ -1448,7 +1476,7 @@ func (m *OS) GetKittyGraphicsCmd() tea.Cmd {
 					ScrollbackLen:      scrollbackLen,
 					ScrollOffset:       w.ScrollbackOffset,
 					IsBeingManipulated: w.IsBeingManipulated,
-					WindowZ:            w.Z,
+					WindowZ:            HitZ(w),
 					IsAltScreen:        w.IsAltScreen(),
 					ScreenWidth:        screenWidth,
 					ScreenHeight:       screenHeight,

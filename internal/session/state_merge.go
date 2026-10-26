@@ -65,6 +65,9 @@ func retainDaemonExclusive(incoming, canonical *SessionState) {
 	incoming.Worktree = canonical.Worktree
 	// The window moves are recorded by a move between sessions, daemon-side.
 	incoming.WindowMoves = canonical.WindowMoves
+	// The task cards are written only by the task verbs, so canonical wins
+	// and no client sync can add, change or drop one. See task.go.
+	incoming.Tasks, incoming.NextTaskID = canonical.Tasks, canonical.NextTaskID
 	if incoming.WorkspaceNames == nil {
 		incoming.WorkspaceNames = canonical.WorkspaceNames
 	}
@@ -72,13 +75,13 @@ func retainDaemonExclusive(incoming, canonical *SessionState) {
 	if incoming.FocusHistory == nil {
 		incoming.FocusHistory = canonical.FocusHistory
 	}
-	// The order is daemon-owned for the same reason the names are, and an
-	// ordinary client sync omits it, so a nil incoming means "not sent" rather
-	// than "cleared". Without this a client that has never reordered anything
-	// would flatten the arrangement every other client is looking at.
-	if incoming.WorkspaceOrder == nil {
-		incoming.WorkspaceOrder = canonical.WorkspaceOrder
-	}
+	// The herdr tab keys are written by a renumber and when a tab closes, both
+	// daemon-side, so canonical wins. A display order is never kept: a build
+	// that sent one arranged without renumbering, and the session's numbering
+	// is the arrangement.
+	incoming.WorkspaceTabKeys = canonical.WorkspaceTabKeys
+	incoming.NextWorkspaceTabKey = canonical.NextWorkspaceTabKey
+	incoming.WorkspaceOrder = nil
 	if incoming.ResurrectionVersion == 0 {
 		incoming.ResurrectionVersion = canonical.ResurrectionVersion
 	}
@@ -168,6 +171,23 @@ func retainDaemonExclusive(incoming, canonical *SessionState) {
 		for ws, custom := range canonical.WorkspaceHasCustom {
 			if _, ok := incoming.WorkspaceHasCustom[ws]; !ok {
 				incoming.WorkspaceHasCustom[ws] = custom
+			}
+		}
+	}
+
+	// The per-workspace layout modes are unioned on the same terms and for the
+	// same reason. A client only holds an entry for a workspace it has been told
+	// about or chose a layout on, so replacing the set would drop the choice for
+	// every workspace the pushing client never heard of: an older client attached
+	// to the same session would wipe every choice out of the daemon with one
+	// push, and the next client to attach would find none of them.
+	if len(canonical.WorkspaceLayoutModes) > 0 {
+		if incoming.WorkspaceLayoutModes == nil {
+			incoming.WorkspaceLayoutModes = make(map[int]string, len(canonical.WorkspaceLayoutModes))
+		}
+		for ws, mode := range canonical.WorkspaceLayoutModes {
+			if _, ok := incoming.WorkspaceLayoutModes[ws]; !ok {
+				incoming.WorkspaceLayoutModes[ws] = mode
 			}
 		}
 	}

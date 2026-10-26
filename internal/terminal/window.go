@@ -107,17 +107,6 @@ func (w *Window) IsAltScreen() bool { return w.isAltScreen.Load() }
 // SetAltScreen records whether the application is using the alternate screen buffer.
 func (w *Window) SetAltScreen(v bool) { w.isAltScreen.Store(v) }
 
-// clipboard returns the last clipboard content set via OSC 52.
-func (w *Window) clipboard() string {
-	if p := w.clipboardContent.Load(); p != nil {
-		return *p
-	}
-	return ""
-}
-
-// setClipboard records the last clipboard content set via OSC 52.
-func (w *Window) setClipboard(content string) { w.clipboardContent.Store(&content) }
-
 // Cache for local terminal environment variables (detect once, reuse for local windows)
 // SSH sessions will detect per-connection based on their environment
 var (
@@ -181,11 +170,10 @@ type Window struct {
 	// any business setting it, and setting it wrong serves a stale frame.
 	cachedContentDim int
 	// CachedCursor is what this window's cursor was the last time the render
-	// loop could read it: where it is, whether it is hidden, and the shape the
-	// guest asked for. Reading the live one needs the I/O lock, which a pane
-	// flooding output holds in a near-continuous burst, and the frame that
-	// would block on it is the same frame carrying the user's keystroke echo.
-	// Serving a cursor one frame old costs nothing anyone can see.
+	// loop could read it outside a synchronized update: where it is, whether it
+	// is hidden, and the shape the guest asked for. Reading the live one needs
+	// the I/O lock, which output bursts can hold almost continuously. Reusing
+	// this sample keeps those panes from delaying the user's keystroke echo.
 	CachedCursor       uv.Position
 	CachedCursorHidden bool
 	CachedCursorStyle  vt.CursorStyle
@@ -357,7 +345,6 @@ type Window struct {
 	DaemonResizeFunc  func(w, h int) error     // Callback for resizing daemon PTY
 	DaemonCloseFunc   func()                   // Callback when window is closed (to notify daemon)
 	OnProcessExit     func()                   // Callback when PTY process exits (to close window)
-	clipboardContent  atomic.Pointer[string]   // Written by VT callback on PTY goroutine, read on UI goroutine (OSC 52)
 	ClipboardSetFunc  func(string)             // Callback to propagate clipboard to host
 	NotifyFunc        func(title, body string) // Callback for guest desktop notifications (OSC 9/777/99)
 	BellFunc          func()                   // Callback for guest bell (BEL)
@@ -365,10 +352,10 @@ type Window struct {
 	NvimNavFunc       func(direction string)   // Callback for nvim navigation requests (OSC 7777)
 	NvimNavStateFunc  func(active bool)        // Callback for nvim navigation state (OSC 7777)
 	NvimNavResetFunc  func()                   // Callback when the alternate screen exits
-	outputChan        chan outputChunk         // Channel for serializing daemon PTY output writes
+	outputQ           *outputQueue             // Queue for serializing daemon PTY output writes
 	outputDone        chan struct{}            // Signal to stop the output writer and render coalescer goroutines
 	suppressCallbacks atomic.Bool              // Suppress VT emulator callbacks during state restoration (prevents race conditions)
-	closed            atomic.Bool              // Set by Close() so the external outputChan sender (WriteOutputAsync) stops before teardown
+	closed            atomic.Bool              // Set by Close() so the external output queue sender (WriteOutputAsync) stops before teardown
 
 	// hasFocus is whether this pane has focus on a screen someone could be
 	// looking at, as the app last set it. The PTY reader reads it when the
@@ -528,6 +515,10 @@ type Window struct {
 	// frame says which machine, and it says it whether or not the shell is
 	// cooperating about its prompt.
 	Host string
+	// hostElsewhere mirrors Host != "" for the PTY reader goroutine, which
+	// may not read Host while the update loop writes it. See
+	// ProcessElsewhere.
+	hostElsewhere atomic.Bool
 	// HostLink is "reconnecting" while the link to Host is lost and the far
 	// machine keeps the process for its grace, and empty otherwise. The frame
 	// says so in words, because a pane whose screen stopped moving looks the
@@ -748,14 +739,13 @@ func newWindowBase(id, title string, x, y, width, height, z int, ptyDataChan cha
 			}
 		},
 		ClipboardSet: func(_ string, content string) {
-			window.setClipboard(content)
 			if window.ClipboardSetFunc != nil {
 				window.ClipboardSetFunc(content)
 			}
 		},
-		ClipboardQuery: func(_ string) string {
-			return window.clipboard()
-		},
+		// No ClipboardQuery: an OSC 52 query is answered with empty content,
+		// as xterm answers by default. The answer is written to the pane's
+		// input, so it must not carry text a program in the pane chose.
 		Notify: func(title, body string) {
 			if window.NotifyFunc != nil {
 				window.NotifyFunc(title, body)
@@ -893,7 +883,7 @@ func NewWindowIn(dir, id, title string, x, y, width, height, z int, exitChan cha
 	// Output reaches the renderer through the same coalescer a daemon pane
 	// uses, so a flooding local pane asks for at most one frame per interval
 	// instead of one per PTY read. Close closes outputDone, which stops it.
-	// outputChan stays nil: that is what tells the daemon-only paths
+	// outputQ stays nil: that is what tells the daemon-only paths
 	// (WriteOutputAsync, outputWriter, the drain and resize sentinels) that
 	// this pane has no daemon stream.
 	window.outputDone = make(chan struct{})
@@ -952,10 +942,9 @@ func NewDaemonWindow(id, title string, x, y, width, height, z int, ptyID string,
 	window.PTYID = ptyID
 	window.DaemonMode = true
 	// Each item is one batch off the daemon stream, up to 256 KiB.
-	// maxQueuedBytes bounds the bytes; the slots only bound the count, and
-	// 4096 of them is 160 KiB of channel per pane for a queue that never gets
-	// a hundred items deep.
-	window.outputChan = make(chan outputChunk, 4096)
+	// maxQueuedBytes bounds the bytes; the slots only bound the count. The
+	// queue starts empty and grows with the backlog (output_queue.go).
+	window.outputQ = newOutputQueue()
 	window.outputDone = make(chan struct{})
 	window.coalesceWake = make(chan struct{}, 1)
 
@@ -975,8 +964,9 @@ func NewDaemonWindow(id, title string, x, y, width, height, z int, ptyID string,
 // The I/O lock is taken only if it is free. A pane in an output burst holds
 // the exclusive side almost continuously, and the frame that would wait for
 // it carries the user's keystroke echo. When the lock is busy the cursor the
-// last read saw is returned, which is at most a frame stale. ok is false when
-// the window has no terminal.
+// last read saw is returned. During a synchronized update the same cache holds
+// the cursor with the last complete content, rather than exposing the guest's
+// intermediate drawing positions or styles. ok is false without a terminal.
 func (w *Window) GuestCursor() (pos uv.Position, hidden, ok bool) {
 	if w.Terminal == nil {
 		return pos, false, false
@@ -987,10 +977,12 @@ func (w *Window) GuestCursor() (pos uv.Position, hidden, ok bool) {
 			w.RUnlockIO()
 			return pos, false, false
 		}
-		w.CachedCursor = w.Terminal.CursorPosition()
-		w.CachedCursorHidden = w.Terminal.IsCursorHidden()
-		w.CachedCursorStyle, w.CachedCursorSteady = w.Terminal.CursorStyle()
-		w.CachedCursorColor = w.Terminal.GuestCursorColor()
+		if !w.Terminal.IsSyncActive() {
+			w.CachedCursor = w.Terminal.CursorPosition()
+			w.CachedCursorHidden = w.Terminal.IsCursorHidden()
+			w.CachedCursorStyle, w.CachedCursorSteady = w.Terminal.CursorStyle()
+			w.CachedCursorColor = w.Terminal.GuestCursorColor()
+		}
 		w.RUnlockIO()
 	}
 	return w.CachedCursor, w.CachedCursorHidden, true
@@ -1003,3 +995,13 @@ func (w *Window) GuestCursor() (pos uv.Position, hidden, ok bool) {
 func (w *Window) SetHasFocus(focused bool) {
 	w.hasFocus.Store(focused)
 }
+
+// SetHost records the machine the pane's process runs on.
+func (w *Window) SetHost(host string) {
+	w.Host = host
+	w.hostElsewhere.Store(host != "")
+}
+
+// ProcessElsewhere reports whether the pane's process runs on another
+// machine. It is safe from any goroutine.
+func (w *Window) ProcessElsewhere() bool { return w.hostElsewhere.Load() }

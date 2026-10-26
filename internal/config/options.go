@@ -163,6 +163,11 @@ var optionSpecs = []Option{
 		Accepted:    BorderStyles, Default: "rounded",
 	},
 	{
+		Path: "appearance.frame_panels", Type: OptionBool, Section: "appearance",
+		Description: "Frame the larger overlay panels, such as the command palette, in the border style",
+		Default:     "false",
+	},
+	{
 		Path: "appearance.zen_mode", Type: OptionString, Section: "appearance",
 		Description: "When window borders are hidden: never, always, or while the mouse is idle",
 		Accepted:    ZenModeModes, Default: ZenModeDisabled,
@@ -373,6 +378,16 @@ var optionSpecs = []Option{
 	{
 		Path: "appearance.border_focused_color", Type: OptionString, Section: "appearance",
 		Description: "Colour overriding the focused pane's border: #89b4fa, a slot name such as bright_cyan, or a role such as accent",
+		Default:     "", Color: true,
+	},
+	{
+		Path: "appearance.border_focused_color_window", Type: OptionString, Section: "appearance",
+		Description: "Colour of the focused pane's border in window mode. It wins over border_focused_color",
+		Default:     "", Color: true,
+	},
+	{
+		Path: "appearance.border_focused_color_terminal", Type: OptionString, Section: "appearance",
+		Description: "Colour of the focused pane's border in terminal mode. It wins over border_focused_color",
 		Default:     "", Color: true,
 	},
 	{
@@ -905,6 +920,11 @@ var optionSpecs = []Option{
 		Accepted:    Backgrounds, Default: "", Color: true,
 	},
 	{
+		Path: "appearance.sidebar.cursor_background", Type: OptionString, Section: "sidebar",
+		Description: "Background of the row under the cursor while the rail has the keyboard: a colour (#rrggbb, 0-255, a slot name or a role name); empty keeps the theme's",
+		Default:     "", Color: true,
+	},
+	{
 		Path: "appearance.sidebar.sections", Type: OptionString, Section: "sidebar",
 		Description: "Section names in the order the rail stacks them, each with an optional percent share. A name left out is a section the rail does not draw, and \"spacer\" is an empty block you may repeat.",
 		Default:     SidebarDefaultSections,
@@ -923,6 +943,11 @@ var optionSpecs = []Option{
 		Path: "appearance.sidebar.folder_click", Type: OptionString, Section: "sidebar",
 		Description: "What a click on a folder row does",
 		Accepted:    SidebarFolderClicks, Default: SidebarFolderClickNavigate,
+	},
+	{
+		Path: "appearance.sidebar.files_style", Type: OptionString, Section: "sidebar",
+		Description: "How the files section draws: list shows one folder at a time, tree opens folders in place under one root",
+		Accepted:    SidebarFilesStyles, Default: SidebarFilesList,
 	},
 	{
 		Path: "appearance.sidebar.header_case", Type: OptionString, Section: "sidebar",
@@ -1096,6 +1121,11 @@ var optionSpecs = []Option{
 		Path: "notifications.error_sticky", Type: OptionBool, Section: "notifications",
 		Description: "Make errors wait for esc instead of expiring",
 		Default:     "true",
+	},
+	{
+		Path: "notifications.bell", Type: OptionString, Section: "notifications",
+		Description: "What a pane's bell does: a dock message, a bell in your terminal, both, or nothing",
+		Accepted:    BellModes, Default: BellToast,
 	},
 
 	// [notifications.agent]. The sounds table is absent: its two keys are paths
@@ -1412,6 +1442,11 @@ var optionSpecs = []Option{
 		Path: "mermaid.theme", Type: OptionString, Section: "mermaid",
 		Description: "Colours of tuios mermaid: tuios for the colours of your theme, or a named theme such as flexoki, nord or rose-pine",
 		Default:     "tuios",
+	},
+	{
+		Path: "mermaid.background", Type: OptionString, Section: "mermaid",
+		Description: "Background of a tuios mermaid picture: theme for the theme's colour, or none for the terminal's own background",
+		Accepted:    []string{"theme", "none"}, Default: "theme",
 	},
 
 	// [hints]. Read each time hints mode opens. hints.patterns is a list and

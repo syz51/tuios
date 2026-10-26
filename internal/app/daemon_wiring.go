@@ -3,6 +3,7 @@ package app
 import (
 	"fmt"
 	"log"
+	"maps"
 	"sync"
 
 	"github.com/Gaurav-Gosain/tuios/internal/session"
@@ -133,6 +134,13 @@ func (m *OS) WireDaemonClient(client *session.TUIClient) {
 	client.OnPaneMark(func(mark session.PaneMarkPayload) {
 		if m.QueueClientEvent(ClientEvent{Type: "pane-mark", PaneMark: mark}) {
 			clientLog("ClientEventChan full, displaced an event for a pane mark")
+		}
+	})
+	// Native plugins that wait for the person's approval. See
+	// plugin_approval.go.
+	client.OnPluginApprovals(func(p session.PluginApprovalsPayload) {
+		if m.QueueClientEvent(ClientEvent{Type: "plugin-approvals", PluginAsks: p.Asks}) {
+			clientLog("ClientEventChan full, displaced an event for plugin approvals")
 		}
 	})
 	// A TML surface opened, changed or closed. Applied in Update; see
@@ -366,9 +374,17 @@ func (m *OS) adoptEmptySessionVersion(state *session.SessionState) {
 	// daemon's. The [startup] tiling that follows saw it on and did nothing,
 	// and the daemon made the first window floating (#480). A nil state is a
 	// session with nothing set, so tiling is off.
+	m.WorkspaceLayoutMode = nil
+	m.sessionLayoutMode = ""
 	if state != nil {
 		m.AutoTiling = state.AutoTiling
+		// The per-workspace modes are the session's, and kept from the session
+		// just left they followed the client here: the next switch found the
+		// map holding another session's choices and pushed them to this one.
+		m.WorkspaceLayoutMode = make(map[int]string, len(state.WorkspaceLayoutModes))
+		maps.Copy(m.WorkspaceLayoutMode, state.WorkspaceLayoutModes)
 		m.ApplyLayoutModeName(state.LayoutMode)
+		m.adoptSessionLayoutMode(state)
 	} else {
 		m.AutoTiling = false
 	}

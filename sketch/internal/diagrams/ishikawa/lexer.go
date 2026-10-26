@@ -1,4 +1,4 @@
-// Ported from pele src/diagrams/ishikawa/lexer.ts at 8fad23bd51783e4df1204e177a7fb0d2a30dcd13.
+// Ported from pele src/diagrams/ishikawa/lexer.ts at 4eff76f98c73b6817800a05773517f35832e4e92.
 //
 // Offsets are byte offsets. A run of white space is measured in UTF-16 units where its length
 // is a number: every JavaScript white space character is one unit.

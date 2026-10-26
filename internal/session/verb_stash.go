@@ -32,11 +32,16 @@ const stashTransferMaxBytes = 8 << 20
 // verbStashPut copies a file into the session's store and answers with the
 // stored path. With content the bytes come in the request, for a file on
 // another machine, and path is only the name they are stored under.
-func (d *Daemon) verbStashPut(_ *connState, params json.RawMessage) (any, *verbError) {
+//
+// Over a link the bytes always come as content and the path is never opened:
+// the path names a file on this machine, and reading it would hand the stash
+// a file the link's policy may not read (the stash, mail, is a lower class
+// than files). An empty file arrives as empty content.
+func (d *Daemon) verbStashPut(cs *connState, params json.RawMessage) (any, *verbError) {
 	var p struct {
-		Session string `json:"session"`
-		Path    string `json:"path"`
-		Content string `json:"content"`
+		Session string  `json:"session"`
+		Path    string  `json:"path"`
+		Content *string `json:"content"`
 	}
 	if verr := decodeParams(params, &p); verr != nil {
 		return nil, verr
@@ -44,8 +49,19 @@ func (d *Daemon) verbStashPut(_ *connState, params json.RawMessage) (any, *verbE
 	if p.Path == "" {
 		return nil, invalidParam("path", "path is required: name the file to store")
 	}
+	viaLink := cs != nil && cs.viaLink
+	if viaLink && p.Content == nil {
+		return nil, hintedVerbError(ErrVerbForbidden, "stash put "+echoName(p.Path)+": a linked machine sends the file's bytes as content", &VerbHint{
+			Param:  "content",
+			Detail: "Nothing was stored. Send the file's bytes, base64, in content.",
+		})
+	}
+	content := ""
+	if p.Content != nil {
+		content = *p.Content
+	}
 
-	sess, verr := d.resolveVerbSession(p.Session)
+	sess, verr := d.resolveVerbSession(cs, p.Session)
 	if verr != nil {
 		return nil, verr
 	}
@@ -55,14 +71,14 @@ func (d *Daemon) verbStashPut(_ *connState, params json.RawMessage) (any, *verbE
 	}
 	var res stashResult
 	var err error
-	if p.Content != "" {
-		if len(p.Content) > base64.StdEncoding.EncodedLen(stashTransferMaxBytes) {
+	if content != "" || viaLink {
+		if len(content) > base64.StdEncoding.EncodedLen(stashTransferMaxBytes) {
 			return nil, hintedVerbError(ErrVerbInvalidParams, "stash put "+echoName(p.Path)+": the content is larger than the transfer cap", &VerbHint{
 				Param:  "content",
 				Detail: "A file that crosses the socket as bytes is capped at " + strconv.Itoa(stashTransferMaxBytes>>20) + " MB.",
 			})
 		}
-		data, derr := base64.StdEncoding.DecodeString(p.Content)
+		data, derr := base64.StdEncoding.DecodeString(content)
 		if derr != nil {
 			return nil, invalidParam("content", "content is not base64")
 		}
@@ -111,14 +127,14 @@ func (d *Daemon) verbStashPut(_ *connState, params json.RawMessage) (any, *verbE
 }
 
 // verbStashList reports what a session's store holds.
-func (d *Daemon) verbStashList(_ *connState, params json.RawMessage) (any, *verbError) {
+func (d *Daemon) verbStashList(cs *connState, params json.RawMessage) (any, *verbError) {
 	var p struct {
 		Session string `json:"session"`
 	}
 	if verr := decodeParams(params, &p); verr != nil {
 		return nil, verr
 	}
-	sess, verr := d.resolveVerbSession(p.Session)
+	sess, verr := d.resolveVerbSession(cs, p.Session)
 	if verr != nil {
 		return nil, verr
 	}
@@ -168,7 +184,7 @@ func (d *Daemon) verbStashList(_ *connState, params json.RawMessage) (any, *verb
 // verbStashGet hands back the bytes of one stashed file, so a file can cross a
 // link. Only a path this session's store put there is served: the stash is
 // not a way to read the daemon's disk.
-func (d *Daemon) verbStashGet(_ *connState, params json.RawMessage) (any, *verbError) {
+func (d *Daemon) verbStashGet(cs *connState, params json.RawMessage) (any, *verbError) {
 	var p struct {
 		Session string `json:"session"`
 		Path    string `json:"path"`
@@ -179,7 +195,7 @@ func (d *Daemon) verbStashGet(_ *connState, params json.RawMessage) (any, *verbE
 	if p.Path == "" {
 		return nil, invalidParam("path", "path is required: name the stashed file to read")
 	}
-	sess, verr := d.resolveVerbSession(p.Session)
+	sess, verr := d.resolveVerbSession(cs, p.Session)
 	if verr != nil {
 		return nil, verr
 	}

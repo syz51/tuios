@@ -219,12 +219,16 @@ func (m *OS) overlayRowHover(kind string, idx int) {
 		m.InboxSelect(idx)
 	case "workspace":
 		m.WorkspaceSwitcherSelected = idx
+	case "goto":
+		m.GotoPickerSelect(idx)
 	case overlayKindBuffers:
 		m.BufferChooserSelect(idx)
 	case overlayKindTransfers:
 		m.TransfersSelect(idx)
 	case overlayKindCopyDialog:
 		m.CopyDialogSelect(idx)
+	case overlayKindPluginApproval:
+		m.PluginApprovalSelect(idx)
 	case "navigator":
 		m.NavigatorSelect(idx)
 	case "aggregate":
@@ -301,10 +305,12 @@ func (m *OS) OverlayMouseWheel(x, y int, up bool) bool {
 	case "agentmail":
 		m.AgentMailMove(wheelDelta(up))
 	case "inbox":
-		m.CockpitWheel(x, up)
+		m.CockpitWheel(x, y, up)
 	case "workspace":
 		n := len(FilterWorkspaceItems(m.WorkspaceSwitcherItems, m.WorkspaceSwitcherQuery))
 		m.WorkspaceSwitcherMove(wheelDelta(up), n)
+	case "goto":
+		m.GotoPickerMove(wheelDelta(up))
 	case overlayKindBuffers:
 		m.BufferChooserMove(wheelDelta(up))
 	case overlayKindTransfers:
@@ -490,6 +496,9 @@ func (m *OS) overlayRowClick(kind string, row overlayRowHit, lx, ly int) tea.Cmd
 	case "workspace":
 		m.WorkspaceSwitcherSelected = row.Idx
 		m.WorkspaceSwitcherActivate(row.Idx)
+	case "goto":
+		m.GotoPickerSelect(row.Idx)
+		m.GotoPickerActivate()
 	case overlayKindBuffers:
 		return m.BufferChooserActivate(row.Idx)
 	case overlayKindTransfers:
@@ -501,6 +510,8 @@ func (m *OS) overlayRowClick(kind string, row overlayRowHit, lx, ly int) tea.Cmd
 		}
 	case overlayKindCopyDialog:
 		return m.CopyDialogActivate(row.Idx)
+	case overlayKindPluginApproval:
+		return m.PluginApprovalActivate(row.Idx)
 	case "navigator":
 		// A click on a session or a workspace row folds it, and a click on
 		// a pane goes to it, as enter does.
@@ -592,6 +603,7 @@ func (m *OS) closeOverlay(kind string) {
 		m.HelpSearchMode = false
 		m.HelpSearchQuery = ""
 		m.HelpScrollOffset = 0
+		m.HelpClosed()
 	case "settings":
 		m.CloseSettings()
 	case "keybinds":
@@ -629,12 +641,17 @@ func (m *OS) closeOverlay(kind string) {
 		m.CloseInbox()
 	case "workspace":
 		m.CloseWorkspaceSwitcher()
+	case "goto":
+		m.CloseGotoPicker()
 	case overlayKindBuffers:
 		m.CloseBufferChooser()
 	case overlayKindTransfers:
 		m.CloseTransfers()
 	case overlayKindCopyDialog:
 		m.CloseCopyDialog()
+	case overlayKindPluginApproval:
+		// Click-away is not now: the plugin keeps waiting.
+		m.ClosePluginApproval()
 	case "worktreeprompt":
 		// Click-away cancels, matching Esc: nothing was asked yet, so nothing
 		// is lost.

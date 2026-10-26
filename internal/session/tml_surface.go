@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
@@ -89,6 +90,10 @@ type TMLSurfacePayload struct {
 	Title    string
 	// Owner names who opened the surface, for the frame.
 	Owner string
+	// Caller is the window id of the pane that opened the surface, empty
+	// for the person's own. The agents view lists the surface under that
+	// pane's agent, in its Artifacts.
+	Caller string
 	// Version counts every change, DocVersion only the changes to the tree.
 	Version    uint64
 	DocVersion uint64
@@ -184,6 +189,10 @@ type tmlSurface struct {
 	version    uint64
 	docVersion uint64
 
+	// view is the view state of the client that last reported one with
+	// tml-input, as JSON, for capture-pane. See tml_capture.go.
+	view json.RawMessage
+
 	closed   bool
 	value    any
 	hasValue bool
@@ -201,7 +210,7 @@ type tmlHost struct {
 // patch that made this version when ops is set. The caller holds the host's
 // lock.
 func (s *tmlSurface) payload(withDoc bool, ops []byte) *TMLSurfacePayload {
-	p := &TMLSurfacePayload{Surface: s.id, WindowID: s.windowID, Title: s.title, Owner: s.owner,
+	p := &TMLSurfacePayload{Surface: s.id, WindowID: s.windowID, Title: s.title, Owner: s.owner, Caller: s.artifactCaller(),
 		Version: s.version, DocVersion: s.docVersion, Closed: s.closed}
 	if s.closed {
 		return p
@@ -217,6 +226,15 @@ func (s *tmlSurface) payload(withDoc bool, ops []byte) *TMLSurfacePayload {
 	}
 	p.State, _ = json.Marshal(s.store.State())
 	return p
+}
+
+// artifactCaller is the window id of the pane that opened s, or "" for a
+// caller in no pane, a pane tuios cannot place and a linked machine.
+func (s *tmlSurface) artifactCaller() string {
+	if s.caller == unplacedWindow || strings.HasPrefix(s.caller, "link:") {
+		return ""
+	}
+	return s.caller
 }
 
 // newTMLSurfaceID returns a short random id, such as tml-4f1a9c02.
@@ -249,8 +267,7 @@ func tmlDocSource(raw json.RawMessage) ([]byte, *verbError) {
 // tmlInvalid is the invalid_tml error for a document's problems.
 func tmlInvalid(problems []tml.Problem, err error) *verbError {
 	msg := err.Error()
-	var terr *tml.Error
-	if errors.As(err, &terr) {
+	if terr, ok := errors.AsType[*tml.Error](err); ok {
 		problems = terr.Problems
 	}
 	e := hintedVerbError(ErrVerbInvalidTML, msg, &VerbHint{
@@ -298,32 +315,29 @@ func (d *Daemon) tmlCallerKey(cs *connState) string {
 // tmlOwnerLabel names the caller on cs for the frame: its pane, a linked
 // machine, or the CLI.
 //
-// A pane with a name is named by it alone when no other window has the same
-// name and the name cannot pass for an id label (tmlNameIsOwnersAlone).
-// Otherwise it is named by its window id, which no program chooses, with the
-// name in brackets. A pane with no name is named by its id. Never the pane's
-// title or the name of the program in it, which the program sets (OSC 2,
-// argv[0]).
+// A pane is named by the first of its labels (tmlPaneLabels) that is its
+// alone (tmlLabelIsOwnersAlone): its name, then the agent in it, such as
+// "claude", then the agent and the folder it started in. A label is a
+// pane's alone when no other window has it among its own labels and it
+// cannot pass for an id label, so no pane can copy another pane's label.
+// Otherwise the pane is named by its window id, which no program chooses,
+// with its first label in brackets. Never the pane's title or the name of
+// the program in it, which the program sets (OSC 2, argv[0]).
 func (d *Daemon) tmlOwnerLabel(cs *connState) string {
 	if cs.viaLink {
 		return "machine " + tmlLabelText(cmp.Or(cs.linkPeer, "unknown"), 24)
 	}
 	if ref := d.callerPaneRef(cs); ref != nil {
-		name := ""
-		if sess := d.sessionHoldingWindow(ref.Window); sess != nil {
-			for _, w := range sess.GetState().Windows {
-				if w.ID == ref.Window {
-					name = tmlLabelText(w.CustomName, 24)
-				}
+		labels := d.tmlPaneLabels(ref.Window)
+		for _, l := range labels {
+			if d.tmlLabelIsOwnersAlone(ref.Window, l) {
+				return l
 			}
 		}
-		switch {
-		case name == "":
+		if len(labels) == 0 {
 			return "pane " + shortID(ref.Window)
-		case d.tmlNameIsOwnersAlone(ref.Window, name):
-			return name
 		}
-		return "pane " + shortID(ref.Window) + " (" + name + ")"
+		return "pane " + shortID(ref.Window) + " (" + labels[0] + ")"
 	}
 	if d.paneAuthority(cs) != nil {
 		return "a pane tuios cannot place"
@@ -334,18 +348,66 @@ func (d *Daemon) tmlOwnerLabel(cs *connState) string {
 // tmlIDLabel matches the label of a pane with no name, "pane 3f2a91c0".
 var tmlIDLabel = regexp.MustCompile(`^pane [0-9a-f]{8}$`)
 
-// tmlNameIsOwnersAlone reports whether a pane's name may stand alone as the
-// owner of its surfaces: no other window in this daemon has that name, and
-// it cannot pass for the label of another pane that has none. A name is not
-// always the person's: a pane with the fan grant names the agents it starts
-// (start-agent --name), so a name alone could copy another pane's.
-func (d *Daemon) tmlNameIsOwnersAlone(windowID, name string) bool {
-	if tmlIDLabel.MatchString(name) {
+// tmlPaneLabels are the labels a window may be named by, best first: its
+// name, the agent in it, and the agent with the folder the window started
+// in. The agent is the harness the pane reported or was detected as, by the
+// name its program runs as, such as "claude" for Claude Code.
+func (d *Daemon) tmlPaneLabels(windowID string) []string {
+	sess := d.sessionHoldingWindow(windowID)
+	if sess == nil {
+		return nil
+	}
+	for _, w := range sess.GetState().Windows {
+		if w.ID == windowID {
+			return d.tmlWindowLabels(sess, w)
+		}
+	}
+	return nil
+}
+
+// tmlWindowLabels is tmlPaneLabels for one window of sess.
+func (d *Daemon) tmlWindowLabels(sess *Session, w WindowState) []string {
+	var out []string
+	if name := tmlLabelText(w.CustomName, 24); name != "" {
+		out = append(out, name)
+	}
+	if agent := tmlLabelText(d.tmlAgentName(w.AgentHarness), 24); agent != "" {
+		out = append(out, agent)
+		start := sess.windowStartDir(w.ID)
+		if dir := tmlLabelText(filepath.Base(start), 24); start != "" && dir != "" && dir != "." && dir != string(filepath.Separator) {
+			out = append(out, agent+" in "+dir)
+		}
+	}
+	return out
+}
+
+// tmlAgentName is the short name of a harness: the first program name its
+// manifest detects, such as "claude" for claude-code, else its id.
+func (d *Daemon) tmlAgentName(harnessID string) string {
+	if harnessID == "" {
+		return ""
+	}
+	if reg := d.agentMatcher.registry; reg != nil {
+		if m := reg.Lookup(harnessID); m != nil && len(m.Detect.Comm) > 0 && m.Detect.Comm[0] != "" {
+			return m.Detect.Comm[0]
+		}
+	}
+	return harnessID
+}
+
+// tmlLabelIsOwnersAlone reports whether a label may stand alone as the
+// owner of a window's surfaces: no other window in this daemon has it among
+// its labels, and it cannot pass for the label of a pane that has none. A
+// name is not always the person's: a pane with the fan grant names the
+// agents it starts (start-agent --name), and a program can report itself as
+// any harness, so a label alone could copy another pane's.
+func (d *Daemon) tmlLabelIsOwnersAlone(windowID, label string) bool {
+	if label == "" || tmlIDLabel.MatchString(label) {
 		return false
 	}
 	for _, sess := range d.manager.AllSessions() {
 		for _, w := range sess.GetState().Windows {
-			if w.ID != windowID && tmlLabelText(w.CustomName, 24) == name {
+			if w.ID != windowID && slices.Contains(d.tmlWindowLabels(sess, w), label) {
 				return false
 			}
 		}
@@ -437,7 +499,7 @@ func (d *Daemon) verbTMLOpen(cs *connState, params json.RawMessage) (any, *verbE
 	if err != nil {
 		return nil, tmlInvalid(nil, err)
 	}
-	sess, verr := d.resolveVerbSession(p.Session)
+	sess, verr := d.resolveVerbSession(cs, p.Session)
 	if verr != nil {
 		return nil, verr
 	}
@@ -532,6 +594,7 @@ func (d *Daemon) verbTMLOpen(cs *connState, params json.RawMessage) (any, *verbE
 	s.windowID = win.ID
 	payload := s.payload(true, nil)
 	d.tml.mu.Unlock()
+	d.recordTMLOpened(s, target)
 	d.pushTMLSurface(sess.ID, payload)
 
 	if !p.Wait {
@@ -622,6 +685,8 @@ func (d *Daemon) verbTMLInput(cs *connState, params json.RawMessage) (any, *verb
 			Value json.RawMessage `json:"value"`
 		} `json:"events"`
 		Actions []tmlPaneAction `json:"actions"`
+		// View is the client's view state, present when it changed.
+		View json.RawMessage `json:"view"`
 	}
 	if verr := decodeParams(params, &p); verr != nil {
 		return nil, verr
@@ -654,6 +719,14 @@ func (d *Daemon) verbTMLInput(cs *connState, params json.RawMessage) (any, *verb
 		if len(e.Value) > s.limits.PatchBytes {
 			return nil, invalidParam("events", fmt.Sprintf("an event value is %d bytes; the limit is %d bytes, as for a patch", len(e.Value), s.limits.PatchBytes))
 		}
+	}
+	if view := bytes.TrimSpace(p.View); len(view) > 0 {
+		if len(view) > tmlMaxView {
+			return nil, invalidParam("view", fmt.Sprintf("the view is %d bytes; the limit is %d bytes", len(view), tmlMaxView))
+		}
+		d.tml.mu.Lock()
+		s.view = append(json.RawMessage(nil), view...)
+		d.tml.mu.Unlock()
 	}
 	if ops := bytes.TrimSpace(p.Ops); len(ops) > 0 && string(ops) != "null" {
 		d.tml.mu.Lock()
@@ -730,6 +803,7 @@ func (d *Daemon) tmlClose(id string, value any, has bool, reason string) *verbEr
 	}
 	s.closed, s.value, s.hasValue, s.reason = true, value, has, reason
 	delete(d.tml.surfaces, id)
+	d.recordTMLClosed(s)
 	payload := s.payload(false, nil)
 	close(s.done)
 	sessionID, windowID := s.sessionID, s.windowID
@@ -754,6 +828,7 @@ func (d *Daemon) tmlWindowGone(id string) {
 	}
 	s.closed, s.reason = true, TMLDismissed
 	delete(d.tml.surfaces, id)
+	d.recordTMLClosed(s)
 	payload := s.payload(false, nil)
 	close(s.done)
 	sessionID := s.sessionID
@@ -1067,14 +1142,14 @@ func (d *Daemon) verbTMLGet(cs *connState, params json.RawMessage) (any, *verbEr
 }
 
 // verbTMLList lists the open surfaces of a session.
-func (d *Daemon) verbTMLList(_ *connState, params json.RawMessage) (any, *verbError) {
+func (d *Daemon) verbTMLList(cs *connState, params json.RawMessage) (any, *verbError) {
 	var p struct {
 		Session string `json:"session"`
 	}
 	if verr := decodeParams(params, &p); verr != nil {
 		return nil, verr
 	}
-	sess, verr := d.resolveVerbSession(p.Session)
+	sess, verr := d.resolveVerbSession(cs, p.Session)
 	if verr != nil {
 		return nil, verr
 	}
@@ -1255,4 +1330,55 @@ func (d *Daemon) runTMLPaneAction(s *tmlSurface, a tmlPaneAction) map[string]any
 		return map[string]any{"verb": a.Verb, "ok": false, "error": verr.Message, "code": verr.Code}
 	}
 	return map[string]any{"verb": a.Verb, "ok": true}
+}
+
+// verbTMLPlace moves a surface between a popup and a tiled pane: the person's
+// choice of where it sits. The surface, its state and its window stay; only
+// the window's placement changes, so a form keeps what the person typed. It
+// acts as the person, so it needs the attach nonce of a client. A patch or a
+// replace from the owner never moves the window back.
+func (d *Daemon) verbTMLPlace(cs *connState, params json.RawMessage) (any, *verbError) {
+	var p struct {
+		Surface    string `json:"surface"`
+		Target     string `json:"target"`
+		HumanNonce string `json:"human_nonce"`
+	}
+	if verr := decodeParams(params, &p); verr != nil {
+		return nil, verr
+	}
+	if p.Target != TMLTargetPopup && p.Target != TMLTargetPane {
+		return nil, invalidParam("target", "unknown target "+echoName(p.Target), tmlTargets...)
+	}
+	s, verr := d.tmlSurfaceOf(p.Surface)
+	if verr != nil {
+		return nil, verr
+	}
+	d.tml.mu.Lock()
+	sessionID, windowID := s.sessionID, s.windowID
+	d.tml.mu.Unlock()
+	if _, ok := d.humanNonceFor(p.HumanNonce, sessionID, cs); !ok {
+		return nil, hintedVerbError(ErrVerbNotHuman, "tml-place acts as the person, so it needs the attach nonce of a client", &VerbHint{
+			Param:  "human_nonce",
+			Detail: "The person moves a surface between a popup and a pane. A program chooses the place once, with tml-open.",
+		})
+	}
+	sess := d.manager.GetSessionByID(sessionID)
+	if sess == nil || windowID == "" {
+		return nil, noSurface(p.Surface)
+	}
+	popup := p.Target == TMLTargetPopup
+	err := sess.mutateState(func(state *SessionState) error {
+		idx, err := findWindowStateIndex(state.Windows, windowID)
+		if err != nil {
+			return err
+		}
+		w := &state.Windows[idx]
+		w.Popup, w.IsFloating = popup, popup
+		return nil
+	})
+	if err != nil {
+		return nil, mapResolveErr(err, sess)
+	}
+	d.artifacts.update(s.caller, s.id, func(r *artifactRec) { r.target = p.Target })
+	return map[string]any{"type": "tml_placed", "surface": p.Surface, "window_id": windowID, "target": p.Target}, nil
 }

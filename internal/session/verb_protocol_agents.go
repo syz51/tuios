@@ -42,7 +42,7 @@ func agentWorkVerbs() map[string]verbEntry {
 	return map[string]verbEntry{
 		// verb_agent_transcript.go
 		"agent-transcript": {
-			description: "Read the conversation of the agent in a pane, for a client that shows it to the person: prompts, answers, thinking, tool calls with their status, diffs of edits, plans and todo lists, decoded from the transcript the pane is joined to. Only the person can read it, with a live human_nonce, as reply-approval checks it. Claude Code transcripts only. Every string is the agent's or its tools', with control characters removed and likely secrets masked, so the reply is marked untrusted.",
+			description: "Read the conversation of the agent in a pane, for a client that shows it to the person: prompts, answers, thinking, tool calls with their status, diffs of edits, plans and todo lists, decoded from the transcript the pane is joined to. Readers include Claude Code, Codex, Gemini CLI, Qwen Code, Copilot CLI, Amp, OpenCode, Cursor Agent and Pi. Only the person can read it, with a live human_nonce, as reply-approval checks it. Every string is the agent's or its tools', with control characters removed and likely secrets masked, so the reply is marked untrusted.",
 			params: []verbParam{
 				sessionParam,
 				{Name: "window", Type: "string", Required: true, Description: "The pane: a window id or name."},
@@ -71,7 +71,7 @@ func agentWorkVerbs() map[string]verbEntry {
 		},
 		// verb_review.go
 		"review-diff": {
-			description: "Read what the agent in a pane changed: the diff of its worktree against the base it was made from, or for a plain repository against the upstream merge base, untracked files included and ignored files left out. Nothing in the repository, its index or its working tree is changed. The text is the repository's, so it is marked untrusted.",
+			description: "Read what the agent in a pane changed: the diff of its worktree against the base it was made from, or for a plain repository against the upstream merge base, untracked files included (one larger than max_untracked_mb is listed as skipped and not read) and ignored files left out. Nothing in the repository, its index or its working tree is changed. The text is the repository's, so it is marked untrusted.",
 			params: []verbParam{
 				sessionParam,
 				windowParam,
@@ -199,7 +199,7 @@ func agentWorkVerbs() map[string]verbEntry {
 			params: []verbParam{
 				{Name: "session", Type: "string", Description: "Any session of the fan. Omit for the most recently active session."},
 				{Name: "changes", Type: "bool", Description: "Count the changed files and lines of each attempt, a few git calls per sibling.", Default: "true"},
-				{Name: "detail", Type: "bool", Description: "With changes, also list each attempt's files (file_list, at most 8, most changed first) and its first changed lines (lines, at most 6). Two more git calls per sibling.", Default: "false"},
+				{Name: "detail", Type: "bool", Description: "With changes, also list each attempt's files (file_list, at most 8, most changed first) and its first changed lines (lines, at most 6). Two more git calls per sibling. From a linked machine, detail needs write in its policy.", Default: "false"},
 			},
 			returns: []verbParam{
 				{Name: "group", Type: "string", Description: "The fan's group."},

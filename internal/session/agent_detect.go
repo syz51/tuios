@@ -521,10 +521,18 @@ func foregroundProcess(shellPid int) (foregroundInfo, bool) {
 // exited: a pid from another pid namespace, an agent in a container say, or
 // on a platform that reads no processes, has none, and is never taken for
 // gone.
+//
+// gone marks a record made from a report whose harness had already left the
+// pane when the report arrived (harnessLeftPane). A hook runs on its own, so
+// one started just before the harness quit can land after it: Pi spawns one
+// for its session_start, and a quick quit beat it to the daemon. The report
+// then named a harness that was no longer its ancestor, so no start time was
+// read, and the claim it set never lapsed.
 type harnessProc struct {
 	pid   int
 	start uint64
 	timed bool
+	gone  bool
 }
 
 // readHarnessProc records pid with its start time, if it can be read.
@@ -538,6 +546,9 @@ func readHarnessProc(pid int) harnessProc {
 // no longer reads, or reads different, which is another process that was given
 // the pid.
 func (h harnessProc) exited() bool {
+	if h.gone {
+		return true
+	}
 	if !h.timed {
 		return false
 	}
@@ -759,12 +770,21 @@ func (s *Session) detectionPass(st *SessionState, readings map[string]detectRead
 				delete(s.agentSharedGuards, w.ID)
 			}
 		}
-		claim := s.agentClaims[w.ID]
+		claim, held := s.agentClaims[w.ID]
 		owned := claim.auto
 		// Noted whoever owns the claim, and before the switch, because
 		// most of its branches do nothing for a claim the detector does
 		// not own. It is what lets the exit be acted on later.
+		//
+		// On a pane nothing holds, the mark goes on a claim at the detector's
+		// rank, not on the zero claim: that one's empty source ranks as a
+		// report, and storing it would shut every other tier out of a pane
+		// whose state a tier has since yielded, for as long as the agent ran.
+		// It is not auto: the detector did not set the state it finds.
 		if detected && !claim.sawProcess {
+			if !held {
+				claim.source = AgentSourceDetect
+			}
 			claim.sawProcess = true
 			out.bookkeeping = true
 			if write {

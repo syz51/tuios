@@ -1,4 +1,4 @@
-// Ported from pele src/diagrams/c4/route.ts at 8fad23bd51783e4df1204e177a7fb0d2a30dcd13.
+// Ported from pele src/diagrams/c4/route.ts at 4eff76f98c73b6817800a05773517f35832e4e92.
 
 package c4
 
@@ -43,6 +43,9 @@ const LEAN = 30
 
 // NARROW and WIDE: label widths that fit the gap between two columns, and where there is room to spare.
 const NARROW = 88
+
+// LABEL_PAD is the space a label's background adds to the width of its text.
+const LABEL_PAD = 8
 const WIDE = 160
 
 // HEAD: the shared person shape is a head of radius 13 centered 14 below the top, over a body that starts 26 below it.

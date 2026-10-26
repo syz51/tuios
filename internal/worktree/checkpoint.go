@@ -277,7 +277,8 @@ func checkpointMessage(n int, root string, m CheckpointMeta) string {
 		subject += ": " + label
 	}
 	var b strings.Builder
-	b.WriteString(subject + "\n\n")
+	b.WriteString(subject)
+	b.WriteString("\n\n")
 	fmt.Fprintf(&b, "Kind: %s\n", m.Kind)
 	fmt.Fprintf(&b, "Pane: %s\n", m.Pane)
 	if m.Session != "" {
@@ -320,15 +321,11 @@ func SaveCheckpoint(ctx context.Context, root string, m CheckpointMeta, keep int
 	if err != nil {
 		return Checkpoint{}, false, err
 	}
-	skipped, err := largeUntracked(ctx, root, m.MaxUntracked)
+	tree, skipped, err := SnapshotTree(ctx, root, m.MaxUntracked)
 	if err != nil {
 		return Checkpoint{}, false, err
 	}
 	m.skipped = skipped
-	tree, err := snapshotTreeExcluding(ctx, root, skipped)
-	if err != nil {
-		return Checkpoint{}, false, err
-	}
 	n := 1
 	if len(list) > 0 {
 		last := list[len(list)-1]
@@ -641,9 +638,7 @@ func dirHoldsOnly(root, dir string, removed map[string]bool) bool {
 
 // runStdin is runCtx with stdin.
 func runStdin(ctx context.Context, dir string, env []string, stdin string, args ...string) (string, error) {
-	cmd := childproc.CommandContext(ctx, "git", args...)
-	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "GIT_EDITOR=true")
+	cmd := childproc.Git(ctx, dir, args...)
 	cmd.Env = append(cmd.Env, env...)
 	cmd.Stdin = strings.NewReader(stdin)
 	var stdout, stderr bytes.Buffer

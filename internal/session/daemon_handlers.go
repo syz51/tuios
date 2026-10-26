@@ -21,6 +21,7 @@ func (d *Daemon) handleHello(cs *connState, msg *Message) error {
 	cs.paneMarks = payload.PaneMarks
 	cs.goodbye = payload.Goodbye
 	cs.tmlSurfaces = payload.TMLSurfaces
+	cs.pluginAsks = payload.PluginApprovals
 	changed := cs.treeOps != payload.LayoutTreeOps || cs.scratchWS != payload.ScratchWorkspaces
 	cs.treeOps = payload.LayoutTreeOps
 	cs.scratchWS = payload.ScratchWorkspaces
@@ -134,6 +135,7 @@ func (d *Daemon) handleAttach(cs *connState, msg *Message) error {
 	}
 
 	var session *Session
+	var created bool
 	var err error
 
 	// Where this client's output lands: see nested_attach.go. A forced attach
@@ -147,15 +149,9 @@ func (d *Daemon) handleAttach(cs *connState, msg *Message) error {
 	}
 
 	if payload.SessionName == "" {
-		session, err = d.manager.GetDefaultSession(cfg, payload.Width, payload.Height)
+		session, created, err = d.manager.GetDefaultSession(cfg, payload.Width, payload.Height)
 	} else if payload.CreateNew {
-		var created bool
 		session, created, err = d.manager.GetOrCreateSession(payload.SessionName, cfg, payload.Width, payload.Height)
-		// Only a session this attach made takes the directory: an attach
-		// to one that exists must not move where its windows start.
-		if err == nil && created && payload.Cwd != "" && checkWindowCwd(payload.Cwd) == nil {
-			session.SetStartDir(absStartDir(payload.Cwd))
-		}
 	} else {
 		session = d.manager.GetSession(payload.SessionName)
 		if session == nil {
@@ -171,6 +167,11 @@ func (d *Daemon) handleAttach(cs *connState, msg *Message) error {
 
 	if err != nil {
 		return fmt.Errorf("failed to get/create session: %w", err)
+	}
+	// Only a session this attach made takes the directory: an attach to one
+	// that exists must not move where its windows start.
+	if created && payload.Cwd != "" && checkWindowCwd(payload.Cwd) == nil {
+		session.SetStartDir(absStartDir(payload.Cwd))
 	}
 	// Refused when the target is the client's own session, or is shown,
 	// through a chain of clients, inside it.
@@ -222,6 +223,8 @@ func (d *Daemon) handleAttach(cs *connState, msg *Message) error {
 			session.attachMu.Unlock()
 		}
 	}()
+	// Asked before cs.mu is taken: the latest state has a lock of its own.
+	returnInput := d.latestReturnInput(session.ID, cs.clientID)
 	cs.mu.Lock()
 	previousSession := cs.sessionID
 	cs.sessionID = session.ID
@@ -236,7 +239,15 @@ func (d *Daemon) handleAttach(cs *connState, msg *Message) error {
 	cs.attachSeq = d.attachCount.Add(1)
 	cs.viewOnly = payload.ViewOnly
 	cs.passive = payload.Passive
-	cs.lastActivity = time.Time{}
+	// A client that comes back to a session it was the latest client of, and
+	// that kept its size for it, takes back the input it had when it left: it
+	// is still the latest there, so the session stays its size rather than
+	// going to a client that typed before it. The time is the one recorded at
+	// the leave, since an attach elsewhere on the way cleared the client's
+	// own. Any other attach starts with none, so the key that switched a
+	// client into a session someone else holds does not count as input there.
+	// See window_size.go.
+	cs.lastActivity = returnInput
 	cs.humanNonce = humanNonce
 	cs.missedStateSync = false
 	cs.mu.Unlock()
@@ -383,6 +394,8 @@ func (d *Daemon) handleAttach(cs *connState, msg *Message) error {
 	// The surfaces open in the session, behind the reply that carries the
 	// windows they are drawn in. See tml_surface.go.
 	d.sendTMLSurfaces(cs, session.ID)
+	// The native plugins that wait for the person. See plugin_approval.go.
+	d.sendPluginAsks(cs)
 
 	// A probe that has not reached a pane yet may still: see nest_probe.go.
 	if inside == nil && !cs.viaLink {
@@ -486,6 +499,7 @@ func (d *Daemon) detachClientFrom(cs *connState, want string) bool {
 	cs.mu.Lock()
 	sessionID := cs.sessionID
 	sessionName := cs.sessionName
+	input := cs.lastActivity
 	if sessionID == "" || (want != "" && (sessionID != want || cs.repliedSession != want)) {
 		cs.mu.Unlock()
 		return false
@@ -535,7 +549,7 @@ func (d *Daemon) detachClientFrom(cs *connState, want string) bool {
 	d.forgetPushes(cs, sessionID)
 
 	// Notify other clients that this client left
-	d.notifyClientLeft(sessionID, clientID)
+	d.notifyClientLeft(sessionID, clientID, input)
 	return true
 }
 

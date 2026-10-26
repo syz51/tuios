@@ -46,7 +46,7 @@ uses that leader. The offer changes nothing until you press `U` and Enter.
 | `tuios` | `ctrl+b` | The tuios keys. This is the default |
 | `tmux` | `ctrl+b` | tmux 3.8's keys after the leader |
 | `screen` | `ctrl+a` | GNU screen's keys after the leader, also on the control variant (`ctrl+a ctrl+n`). `ctrl+a ctrl+a` goes to the last workspace. `ctrl+a a` sends `ctrl+a` to the pane |
-| `zellij` | `ctrl+g` | zellij's unlock-first keys. After `ctrl+g`, `p` opens pane mode (the window menu), `t` tab mode (the workspace menu), `s` copy mode and `o` the session switcher. The next key runs one action. In pane mode `r` splits right, `d` splits down, `f` zooms, `h` `j` `k` `l` move focus and `c` renames. In tab mode `n` opens a workspace, `x` closes it, and `h` and `l` go to the previous and next |
+| `zellij` | `ctrl+g` | zellij's unlock-first keys. After `ctrl+g`, `p` opens pane mode (the window menu), `t` tab mode (the workspace menu), `s` copy mode and `o` the session switcher. The next key runs one action. In pane mode `r` splits right, `d` splits down, `f` zooms, `h` `j` `k` `l` move focus and `c` renames. In tab mode `n` opens a workspace, `x` closes it, and `h` and `l` go to the previous and next. It turns on [lock mode](#lock-mode) |
 
 - A tmux window is a workspace here. A tmux pane is a window here. So `c`,
   `n`, `p`, `l`, `0` to `9`, `,` and `&` act on workspaces.
@@ -79,6 +79,46 @@ uses that leader. The offer changes nothing until you press `U` and Enter.
 `tuios keybinds cheatsheet tmux` shows the keys in three groups: the keys that
 work as in tmux, the tuios keys that moved, and what tmux has that tuios does
 not. `tuios keybinds preset show tmux` prints the preset file.
+
+## Lock mode
+
+Lock mode gives every key to the program in the pane. It is the locked mode of
+zellij. Turn it on in `config.toml`:
+
+```toml
+[keybindings]
+lock = true
+```
+
+The zellij preset turns it on. Set `lock = false` to turn it off under that
+preset.
+
+- In terminal mode, tuios takes only the leader. Every other key goes to the
+  pane, also the keys that tuios binds. `alt+1` to `alt+9`, `alt+n`,
+  `alt+esc`, `ctrl+p`, the arrow keys with `alt`, `shift+up` and the hold key
+  all go to the pane.
+- The leader unlocks. Press the leader, then the keys of one action. The
+  action runs and tuios locks again.
+- A repeatable action keeps its menu open. These are the actions in
+  `keybindings.repeat`, such as focus moves and resize steps. Press the key
+  again to move again. You do not press the leader again.
+- The open menu then takes only repeatable keys. Any other key closes the
+  menu and goes to the pane, and tuios locks again. For example, `x` after
+  `ctrl+b left right` goes to the pane. It does not close a pane. The
+  which-key panel of the open menu shows only the repeatable keys and `esc`.
+- Press `esc` to close the menu and lock again. `ctrl+c` also closes it.
+- Press the leader to close the menu and open a new leader menu.
+- A key that the open menu does not bind closes the menu. The key goes to the
+  pane.
+- To go to window mode, press the leader, then `esc`.
+- To send the leader to the pane, press the leader two times.
+- Window mode, overlays, copy mode and the mouse do not change.
+
+The mode pill in the dock shows a lock when tuios is locked. It shows an open
+lock while the leader or a menu waits for a key. Without Nerd Fonts, the pill
+shows `LOCK` and `UNLOCK`. When the dock is hidden, or
+`appearance.dock_prefix_indicator` is `"badge"`, the floating badge shows
+`PREFIX` and the open lock while a menu waits for a key.
 
 ## The full list
 
@@ -291,6 +331,41 @@ click on a session or a workspace opens or closes it.
 `tuios list-windows --all --text 40 --json` prints the same rows for a script.
 See [CLI_REFERENCE.md](CLI_REFERENCE.md#tuios-list-windows).
 
+### Go to anything
+
+`Ctrl+B G` opens the go-to picker. It lists every place you can go in one list: agents, sessions, the workspaces of each session, and panes. The action is `goto_picker`. The command palette has it as "Go to: an agent, session, workspace or pane".
+
+Each row starts with its kind, then says where the place is:
+
+```
+agent      claude · payments › 1 › api    needs you: approve Bash ●
+session    payments [space: surge]                          3 panes
+workspace  payments › 2 · api-tests                          1 pane
+pane       payments › 1 › nvim
+```
+
+With nothing typed, the first row is the place you were on last, so `Ctrl+B G` and `enter` take you back to where you were. The agents that need you come right after it, the one waiting longest first, then the other places you were on recently, the most recent first, then every agent, session and workspace. Panes are listed once you type something. A session has many panes, and the ones you were just on are already in the recent places.
+
+Typed words are a fuzzy search over the names a row shows: the session, the workspace, the pane, and for an agent its harness and its last message. A `key:value` term narrows the rows instead, and every term has to match. The terms are the selector the agents view takes (`harness:`, `state:`, `needs:you`, `session:`, `group:`, `host:`, `name:`), and three more:
+
+| Term | Keeps |
+|---|---|
+| `kind:agent`, `kind:session`, `kind:workspace` (or `kind:ws`), `kind:pane` | Rows of that kind |
+| `space:NAME` | Rows of the sessions filed under that space |
+| `ws:N` | Agents, workspaces and panes on that workspace, by number or name |
+
+A value is a glob, and commas between values mean any of them, as in `kind:session,workspace`. A term that does not fit a row leaves it out: `harness:` keeps only agents, and `ws:` leaves out the sessions. `@`, `#` or `!` at the start of the query is `kind:agent`, `kind:session` or `kind:workspace`. For example, `#space:surge` lists the sessions in the surge space, and `@needs:you` lists the agents that need you.
+
+| Key | What it does |
+|---|---|
+| The list keys | Move. See [Lists and panels](#lists-and-panels) |
+| `enter` | Go there: the session, then the workspace, then the pane |
+| `@`, `#`, `!` first | Filter to agents, sessions or workspaces. The picker's hint shows them as `@ # ! filter` |
+| `ctrl+u` | Clear the query |
+| `esc` | Close the picker |
+
+Workspaces and panes are listed for the sessions on the machine you are attached to. A session on another machine is listed, and its agents are, and `enter` on it attaches that machine as the rail does. A workspace of a session you are not attached to shows its number, because its name is not sent to your client.
+
 ## Neovim pane navigation
 
 The optional [tuios-nvim-navigator](https://github.com/Tim4c/tuios-nvim-navigator)
@@ -325,7 +400,7 @@ TUIOS itself.
 Every list in the TUI moves the same way: the command palette, the launcher,
 the settings page, the agents view, the mailbox, the keybind manager, the theme,
 glyph and effect pickers, the session, workspace, layout and machine pickers,
-the window picker, the quit and context menus, the dock and rail editors and
+the go-to picker, the window picker, the quit and context menus, the dock and rail editors and
 the tape manager.
 
 | Keys | What it does |
@@ -372,6 +447,17 @@ headers. The headers are not rows: the cursor steps over them. Once you type,
 the commands are ranked by how well they match, and each row names its
 category in a quiet column on the right.
 
+Type `#` to search actions instead of commands. `#close` lists every action
+with "close" in its name, key or description, with the keys it is on today.
+Press `Enter` to run the action. The palette closes first, so the action works
+on the pane and the mode underneath, as its key would. Press `ctrl+e` to open
+the keybind manager on the action, to rebind or unbind it. The footer shows
+that key while a `#` search is open.
+
+Some actions work only in their own view, such as a rail, Inbox, mail or copy
+mode key. The palette has nothing for them to act on, so `Enter` on one opens
+the keybind manager, as `ctrl+e` does.
+
 The prefix menu (which-key) shows the keys after the leader in sections
 (Windows, Panes, Sessions, Modes, Menus, Tools, and Agents once an agent has
 run), laid out in as many columns as the screen holds. A key marked with `+`
@@ -384,6 +470,19 @@ they shorten in steps. First, `ctrl+` becomes `^`, `alt+` becomes `M-` and
 time. The way out, such as `esc`, stays. Only when the most important hints
 still do not fit do their labels go, from the last hint back. A hint is never
 cut in the middle of a word.
+
+### The rename dialog
+
+One dialog renames a window, a session and a workspace. It opens holding the current name. Its keys are fixed.
+
+| Keys | What it does |
+|---|---|
+| `enter` | Save the name |
+| `esc` | Cancel |
+| `ctrl+u` | Clear the field |
+| `ctrl+c` | Clear the field, or cancel when it is already empty |
+
+A click on the `clear` hint in the dialog's border clears the field too. In the help's search, `ctrl+u` clears the query.
 
 ### Mode keys in the dock
 
@@ -476,6 +575,19 @@ the focus, resize, swap, zoom and close. The key works from inside the box.
 The action is `toggle_scratch`, and `[scratch]` sets the size of the box. See
 [SESSIONS.md](SESSIONS.md#the-scratch-terminal). To add more scratch terminals
 on keys of their own, see [Command keys](#command-keys).
+
+## New worktree
+
+`Ctrl+B U` makes a worktree of the repository of the focused pane's folder.
+A small dialog asks for the branch name. `tab` moves to the session name.
+Leave the session name empty to use the name the dialog shows. `enter` makes a
+new branch in a new worktree and a session in it. The session is grouped under
+its repository in the sidebar, and tuios switches to it. This is what
+`tuios worktree new` does. `esc` closes the dialog.
+
+If the focused pane is not in a git repository, a message says so. The action
+is `new_worktree`, and the command palette has it too. A right-click on a
+session or a repository in the sidebar opens the same dialog.
 
 ## Picture in picture
 
@@ -817,6 +929,10 @@ entry, with the same dialog, but it acts on the tab's workspace instead of the
 current one. It is dimmed when the workspace has no pane to close. Closing a
 workspace that is not on screen leaves the view where it is.
 
+When the closed workspace is not on screen, or when tuios goes back from it,
+the workspaces above it move down one, so the numbers follow the positions.
+See [CONFIGURATION.md](CONFIGURATION.md#workspace-numbers).
+
 `tuios close-workspace` does the same from a shell. See
 [CLI_REFERENCE.md](CLI_REFERENCE.md#tuios-close-workspace).
 
@@ -862,6 +978,35 @@ restart_daemon = ["alt+r"]
 `tuios restart-server` does the same from a shell. See
 [CLI_REFERENCE.md](CLI_REFERENCE.md#tuios-restart-server).
 
+## Move a pane to another workspace
+
+Three default key sets go to workspace N or send the focused pane there. They
+work in window mode and in terminal mode.
+
+| Action | macOS | Linux and other | What it does |
+| --- | --- | --- | --- |
+| `switch_workspace_1` to `switch_workspace_9` | `opt+N` | `alt+N` | Shows workspace N. |
+| `move_and_follow_1` to `move_and_follow_9` | `opt+shift+N` | `alt+shift+N` | Sends the focused pane to workspace N and shows workspace N. |
+| `send_to_workspace_1` to `send_to_workspace_9` | `ctrl+opt+N` | `ctrl+alt+N` | Sends the focused pane to workspace N and stays on this workspace. Focus goes to another pane here. |
+
+`send_to_workspace_N` needs a terminal that reports Ctrl and Alt with a digit.
+A legacy terminal sends `ctrl+alt+N` as `alt+N`, or as a control character for
+most digits. The Kitty keyboard protocol reports the key, and so does xterm's
+modifyOtherKeys. Ghostty, kitty, WezTerm and foot speak the Kitty protocol. In
+another terminal, bind the action to a key the terminal can send:
+
+```toml
+[keybindings.workspaces]
+send_to_workspace_2 = ["alt+w"]
+```
+
+Your `config.toml` may already bind `ctrl+alt+N` to another action in window
+mode. Then that binding keeps the key, and `send_to_workspace_N` has none.
+`tuios keybinds doctor` lists it.
+
+Windows sends AltGr as Ctrl+Alt. A character typed with AltGr, such as `€` on a
+UK keyboard, still reaches the pane and does not move it.
+
 ## Cycle through workspaces
 
 The `next_workspace` and `prev_workspace` actions go to the next or the
@@ -887,13 +1032,12 @@ section where you want them.
 | `mark_pane` | Marks the focused pane, or clears the mark when it is the marked one. The marked pane shows `[marked]` in its title bar. |
 | `join_marked_left`, `join_marked_right`, `join_marked_up`, `join_marked_down` | Moves the marked pane next to the focused one, on that side, from this workspace or another. Needs BSP tiling. |
 | `resize_pane_left_5`, `resize_pane_right_5`, `resize_pane_up_5`, `resize_pane_down_5` | Moves the focused pane's edge by 5 cells. The `_20` actions move it by 20. Under the leader, the key repeats without a second leader press, as tmux `bind -r` does. |
-| `new_workspace` | Goes to the first workspace with no pane, the one the dock's `+` button opens, and opens a pane there. |
+| `new_workspace` | Goes to the first workspace with no pane, the one the dock's `+` button opens, and opens a pane there. On an empty workspace past the last one in use, that workspace is the new one: it stays there and opens the pane there. |
 | `last_workspace` | Goes back to the workspace you were on before this one, as tmux `last-window` does. Press it again to go back and forth. |
 | `break_pane` | Moves the focused pane to the first workspace with no pane and goes with it, as tmux `break-pane` does. |
 | `last_session` | Goes back to the session you were on before this one, as tmux `switch-client -l` does. |
 | `send_prefix` | Sends the leader key to the program in the focused pane, as pressing the leader two times in terminal mode does. Use it for screen's `C-a a`, or for a tmux in the pane. |
-| `move_workspace_left`, `move_workspace_right` | Swaps this workspace with the one before or after it, and follows it. |
-| `send_to_workspace_1` to `send_to_workspace_9` | Sends the focused pane to that workspace. |
+| `move_workspace_left`, `move_workspace_right` | Swaps this workspace with the one before or after it, and follows it. The two workspaces trade numbers, so the moved one answers to its new number. |
 | `cycle_layout` | Cycles BSP, master-stack and scrolling. |
 | `reload_config` | Reads `config.toml` again, as the "Reload config" palette row does. |
 | `toggle_mouse` | Stops asking the terminal for mouse reports, so the terminal selects text itself. Run it again to turn the mouse back on. The setting lasts until you quit. |
@@ -907,6 +1051,54 @@ on the workspace in the multifocus set, so typing goes to all of them. See
 mark_pane = ["m"]
 join_marked_right = ["J"]
 ```
+
+## Menus nested under the leader
+
+A key in a prefix menu can open a menu of your own, so a keymap can nest as
+deep as a tmux which-key tree. You declare the menu, then bind the action
+`open_menu:NAME` to the key that opens it. tuios has no menus of this kind
+until you declare one, and it binds no new key for them.
+
+```toml
+[keybindings.window_prefix]
+"open_menu:split" = ["s"]
+
+[keybindings.menus.split]
+title = "Split"
+
+[keybindings.menus.split.keys]
+prefix_split_vertical = ["y"]
+prefix_split_horizontal = ["x"]
+"open_menu:resize" = ["R"]
+
+[keybindings.menus.resize]
+title = "Resize"
+sticky = true
+
+[keybindings.menus.resize.keys]
+resize_pane_left_5 = ["h"]
+resize_pane_down_5 = ["j"]
+resize_pane_up_5 = ["k"]
+resize_pane_right_5 = ["l"]
+```
+
+`Ctrl+B t s y` splits the pane. `Ctrl+B t s R h h h` narrows it by three steps.
+
+- `open_menu:NAME` goes in any section: after the leader, in another menu, or
+  in window mode or terminal mode for a menu that opens on one key.
+- A menu name has lowercase letters, digits, `-` and `_`.
+- `title` heads the which-key panel and defaults to the name. `sticky` keeps
+  the menu open after a key runs, as tmux `bind -r` does, until `esc` or a key
+  the menu does not bind. In terminal mode that key goes to the pane, so the
+  first letter you type after resizing is not lost. `esc` and `ctrl+c` close a
+  menu and are never sent to the pane.
+- A key that the menu does not bind closes it, and a menu that is not sticky
+  drops the key, as the other prefix menus do.
+- The which-key panel lists the keys the menu has. Menus come first, with a
+  `+`.
+- `tuios keybinds list`, `doctor`, `unbind` and `free` read the menus as they
+  read any other section. A config warning names a key that opens a menu that
+  is not declared, and a menu that no key opens.
 
 ## Split into the same ssh
 
@@ -1022,6 +1214,95 @@ copy_mode_line_end = ["end", "ctrl+e"]
 
 tuios cannot put two actions on one key. `tuios send-keys` cannot do it either,
 because a key from `send-keys` does not go to copy mode.
+
+### Open the scrollback in the editor
+
+`Ctrl+G` in copy mode opens the scrollback of the pane in your editor. The
+file has all the scrollback and the screen, as plain text. zellij does the
+same with `e`.
+
+| Key | Where | Action |
+| --- | --- | --- |
+| `Ctrl+G` | Copy mode | `edit_scrollback` |
+| `Ctrl+B E` | Any mode | `edit_scrollback` |
+
+The command palette entry is "Edit the scrollback in the editor".
+
+- tuios uses the File editor setting first. Then it uses `$EDITOR`, then
+  `$VISUAL`, then `vi`.
+- vi, vim, nvim, nano, emacs, kakoune and helix open at the line of the copy
+  cursor. Outside copy mode, they open at the top of the screen. Other
+  editors open at the start of the file.
+- In a session with a daemon, the text comes from the daemon. It has the
+  full scrollback, also when your client has only part of it.
+- The editor uses the terminal that tuios runs in. tuios comes back when the
+  editor exits.
+- The file is in a private folder. tuios removes the file when the editor
+  exits, and when the client stops.
+- A browser client or an SSH client from another machine cannot open the
+  editor. tuios shows a message.
+
+In copy mode, `e` and `E` move to the end of a word, as in vim. For this
+reason, the editor key is `Ctrl+G`. `Ctrl+G` also opens a reply in the editor.
+To use another key, set it in the `copy_mode` section:
+
+```toml
+[keybindings.copy_mode]
+edit_scrollback = ["ctrl+o"]
+```
+
+The tmux preset uses `Ctrl+B E` to make the splits equal. With that preset,
+the editor key is `Ctrl+B Ctrl+T E`.
+
+### Clear the scrollback
+
+The `clear_scrollback` action clears the scrollback of the focused pane. It
+also removes the rows above the prompt, and the prompt row moves to the top of
+the pane. Ghostty, iTerm2 and Terminal.app do the same on `Cmd+K`.
+
+| Action | Default key |
+| --- | --- |
+| `clear_scrollback` | None |
+
+The command palette entry is "Clear the scrollback".
+
+- tuios sends no key to the program, so the shell does not redraw.
+- When the shell marks its prompt with OSC 133, tuios keeps all the lines of
+  the prompt.
+- In a session with a daemon, the daemon clears the pane. Each client of the
+  session shows the clear. An attach later does not bring the old rows back.
+- The key also works in copy mode. tuios leaves copy mode.
+- tuios clears nothing while a full-screen program, such as vim or less, uses
+  the pane. tuios shows a message.
+
+`tuios clear-history` clears the scrollback from the command line, as tmux
+`clear-history` does. It keeps the screen. With `--screen`, it does the same
+as the key. See [CLI_REFERENCE.md](CLI_REFERENCE.md#tuios-clear-history).
+
+The action has no default key, because the host terminal usually keeps `Cmd+K`
+for itself. To use `Cmd+K`, bind `super+k` in the `global` section. A key in
+the `global` section works in terminal mode and in window mode.
+
+```toml
+[keybindings.global]
+clear_scrollback = ["super+k"]
+```
+
+Then tell the host terminal to send `Cmd+K` to tuios. In Ghostty, add this line
+to the Ghostty config:
+
+```
+keybind = cmd+k=unbind
+```
+
+In iTerm2 and Terminal.app, `Cmd+K` is a menu item. Remove or change its
+shortcut in the settings of the terminal. A terminal that does not send the
+Super key cannot send `super+k`. Bind another key, such as `Ctrl+B K`:
+
+```toml
+[keybindings.prefix_mode]
+clear_scrollback = ["K"]
+```
 
 ### Pipe a yank through a command
 
@@ -1238,6 +1519,7 @@ Inside it:
 | `space` | Read an approval's or a question's prompt and answer it here |
 | `n` | Open the New agent sheet. See below |
 | `c` | On an attempt of a fan: compare the attempts. See below |
+| `o` | Open what the agent has shown, such as a TML form, on its Artifacts tab, and use it. `esc` goes back to the list |
 | `f` | Show only what needs you, then each kind of item, then every agent |
 | `s` | Step the order inside each group |
 | `/` | Search. A `key:value` term is a selector, such as `harness:codex` |
@@ -1245,8 +1527,8 @@ Inside it:
 | `y` `p` `m` | Resume, pass held mail on, open the mailbox |
 | `x` `*` | Mark an agent, or every agent shown, for a bulk answer. A marked row shows a mark, and the header counts the marks |
 | `1` `3` with marks | Allow every marked approval once, after a sheet that lists them, or reject them |
-| `[` `]` | Switch the focus tabs: Thread, Changes, Checkpoints and Pane |
-| `J` `K` | Scroll the thread, or a long plan waiting for a yes |
+| `[` `]` | Switch the focus tabs: Thread, Changes, Artifacts, Checkpoints and Pane |
+| `J` `K` | Scroll the thread, or a long plan waiting for a yes. On the Artifacts tab, move between the artifacts |
 | `e` | Show every line of every card in the thread |
 | `v` | Review the agent's changes |
 | `ctrl+]` | Go to the agent's pane and zoom it. `ctrl+b i` comes back to the same agent |
@@ -1297,6 +1579,25 @@ through `tuios start-agent`. Uncommitted files stay in this folder. On a
 linked host the agent works in a new worktree of the host's checkout, which
 the host finds by the repository's origin.
 
+The Artifacts tab lists what the agent has shown you: each TML document its
+pane opened, open or closed, and each screenshot it took. The newest is
+first. The selected one is drawn under the list. An open document is the
+same document as its popup or pane, with the same state: what you choose in
+one place shows in the other. `o` or a click gives it the keys, and `esc`
+gives them back. A closed document shows what it showed last, and your
+answer. A document from another session is read-only here.
+
+A TML popup and the agents view do not show at the same time:
+
+- Open the view while an agent's popup floats, and the view selects that
+  agent and shows the popup's document, with the keys.
+- A document that opens while the view is open shows in the focus when it is
+  from the selected agent. From another agent, its row gets a
+  `● new artifact` chip, and a popup moves the row to Needs you. A click on
+  the chip opens it.
+- Close the view while the Artifacts tab shows an open document, and its
+  window gets the focus and floats again.
+
 In the image view, which a click on an image chip in the reply opens: `o`
 opens the image in the desktop's viewer, `c` saves a copy and copies its
 path, `s` saves a copy, `left` and `right` step through the images, `+` and
@@ -1343,7 +1644,7 @@ These keys are in three sections of their own, rebindable like any other:
 `inbox_write`, `inbox_sort`, `inbox_view_pane`, `inbox_new_agent`,
 `inbox_allow`, `inbox_allow_always`, `inbox_open`, `inbox_back`,
 `inbox_help`, `inbox_mark`, `inbox_mark_all`, `inbox_tab_prev`,
-`inbox_tab_next`, `inbox_expand`, `inbox_compare`),
+`inbox_tab_next`, `inbox_expand`, `inbox_compare`, `inbox_artifact`),
 `[keybindings.inbox_peek]` (the prompt: `peek_approve`, `peek_approve_always`,
 `peek_deny`, `peek_type`, `peek_read_again`, `peek_go`, `peek_back`) and
 `[keybindings.mail]` (the mailbox: `mail_down`, `mail_up`, `mail_page_down`,
@@ -1786,6 +2087,11 @@ prev_workspace = ["p"]
 
 An action in the list repeats only when a key runs it after the leader. tuios
 warns about an entry with no such key, and about a misspelt action.
+
+With `keybindings.lock` on, there is no repeat window in terminal mode. A
+repeatable action keeps its menu open until you press `esc`, with no time
+limit. The open menu takes only repeatable keys. Any other key goes to the
+pane, and tuios locks again. See [Lock mode](#lock-mode).
 
 Workspace switching on `opt+1` to `opt+9` works with no configuration on a
 US or ABC keyboard layout. It also works in a terminal that reports Alt with

@@ -445,7 +445,7 @@ func TestTheClientPresentsItsPaneWhereTheKernelCannot(t *testing.T) {
 	if !kernel.Daemon().PaneGrants {
 		t.Fatal("the daemon's hello does not say it takes pane grants")
 	}
-	kernel.presentPaneToken(true, getenv)
+	_ = kernel.presentPaneToken(true, getenv, sp)
 	if _, err := kernel.Call("capture-pane", map[string]any{"session": "b", "window": b1}); err != nil {
 		t.Errorf("a client that presented nothing was held: %v", err)
 	}
@@ -455,7 +455,7 @@ func TestTheClientPresentsItsPaneWhereTheKernelCannot(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = c.Close() }()
-	c.presentPaneToken(false, getenv)
+	_ = c.presentPaneToken(false, getenv, sp)
 	_, err = c.Call("capture-pane", map[string]any{"session": "b", "window": b1})
 	var callErr *VerbCallError
 	if !errors.As(err, &callErr) || callErr.Code != ErrVerbForbidden {
@@ -641,7 +641,9 @@ func TestAPaneCannotTypeIntoAPaneThatHoldsMore(t *testing.T) {
 	if f, _ := focusedWindowID(d.manager.GetSession("a").GetState()); f != a2 {
 		t.Fatalf("focused window = %s, want %s for this check", f, a2)
 	}
-	wantForbidden(t, "send-text into the focused admin sibling", callP(c, t, "send-text", map[string]any{"text": widen}))
+	if code := errCode(t, callP(c, t, "send-text", map[string]any{"text": widen})); code != ErrVerbInvalidParams {
+		t.Errorf("send-text with no window from a pane answered %s, want invalid_params", code)
+	}
 
 	// Its own pane is always its own to type into.
 	result(t, callP(c, t, "send-text", map[string]any{"window": a1, "text": "x"}))
@@ -688,15 +690,20 @@ func TestTypingIntoAPromptNeedsRespond(t *testing.T) {
 		t.Errorf("ask-agent into a prompt answered %s, want agent_blocked as before", code)
 	}
 
-	// respond covers it.
+	// respond covers it, with allow_blocked to say the caller read the prompt.
 	setStrict(d, append(append([]string{}, config.DefaultStrictGrants...), config.PaneGrantRespond)...)
-	result(t, callP(c, t, "send-keys", map[string]any{"window": a2, "keys": "Enter"}))
+	if code := errCode(t, callP(c, t, "send-keys", map[string]any{"window": a2, "keys": "Enter"})); code != ErrVerbAgentBlocked {
+		t.Errorf("send-keys with respond and no allow_blocked answered %s, want agent_blocked", code)
+	}
+	result(t, callP(c, t, "send-keys", map[string]any{"window": a2, "keys": "Enter", "allow_blocked": true}))
 
 	// A pane that has come to a prompt since the call was checked is refused
 	// by the handler's second look.
 	setStrict(d)
-	d.setApprovalPeer(func(*connState) (bool, string) { return false, "" })
-	setAgentState(t, person, "a", a2, string(AgentStateIdle), "", "")
+	// The pane says it is at rest itself. A word from anyone else would
+	// hold it as still on its prompt (promptStillShown).
+	d.setApprovalPeer(func(*connState) (bool, string) { return true, a2 })
+	setAgentState(t, dialVerb(t, sp), "a", a2, string(AgentStateIdle), "", "")
 	d.setApprovalPeer(func(*connState) (bool, string) { return true, a1 })
 	cs := &connState{}
 	if _, verr := d.checkGrants(cs, "send-text", json.RawMessage(`{"window":"`+a2+`","text":"x"}`)); verr != nil {
@@ -863,5 +870,44 @@ func TestAttachedClientAnswersGetWindowAndNeverAPanesKeys(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Error("the person's send-keys never reached the attached client")
+	}
+}
+
+// TestThePluginTokenHoldsTheCaller: a process that presents a plugin's
+// token is held to that plugin, which here holds nothing, and is never the
+// person. A token that does not prove the id fails the connection, so a
+// plugin's call is never let through unplaced. Review of #1006, B1: the verb
+// did not declare the parameters, the dispatcher refused them, and the CLI
+// ignored the refusal.
+func TestThePluginTokenHoldsTheCaller(t *testing.T) {
+	d, sp, _, _, b1 := scopeFixture(t)
+	d.setApprovalPeer(func(*connState) (bool, string) { return false, "" })
+	env := map[string]string{"TUIOS_PLUGIN_ID": "e2e.tok", "TUIOS_PLUGIN_TOKEN": d.manager.PluginToken("e2e.tok"), "TUIOS_SOCKET": sp}
+	getenv := func(k string) string { return env[k] }
+
+	c, err := DialVerbClientAt(sp, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = c.Close() }()
+	if err := c.presentPaneToken(true, getenv, sp); err != nil {
+		t.Fatalf("a good plugin token was refused: %v", err)
+	}
+	var callErr *VerbCallError
+	if _, err := c.Call("capture-pane", map[string]any{"session": "b", "window": b1}); !errors.As(err, &callErr) || callErr.Code != ErrVerbForbidden {
+		t.Errorf("capture by a plugin that holds nothing = %v, want forbidden", err)
+	}
+	if _, err := c.Call("attach-presence", nil); err == nil {
+		t.Errorf("a caller with a plugin's token was confirmed as the person")
+	}
+
+	env["TUIOS_PLUGIN_TOKEN"] = "00" + env["TUIOS_PLUGIN_TOKEN"][2:]
+	bad, err := DialVerbClientAt(sp, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = bad.Close() }()
+	if err := bad.presentPaneToken(true, getenv, sp); err == nil {
+		t.Errorf("a token that does not prove the plugin id was taken")
 	}
 }

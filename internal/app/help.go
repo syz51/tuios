@@ -238,7 +238,7 @@ func generateAgentBindings(registry *config.KeybindRegistry, s *config.Settings)
 	add([]string{"1-9"}, "Agents view: answer a held approval or a question by its number")
 	for _, action := range []string{
 		config.ActionInboxAllow, config.ActionInboxAllowAlways, config.ActionInboxReply, config.ActionInboxDenyReason,
-		config.ActionInboxPeek, config.ActionInboxGo, config.ActionInboxWrite, config.ActionInboxNewAgent, config.ActionInboxCompare,
+		config.ActionInboxPeek, config.ActionInboxGo, config.ActionInboxWrite, config.ActionInboxNewAgent, config.ActionInboxCompare, config.ActionInboxArtifact,
 		config.ActionInboxDismiss, config.ActionInboxResume, config.ActionInboxPassOn, config.ActionInboxFilter,
 		config.ActionInboxSelect, config.ActionInboxMailbox, config.ActionInboxReview, config.ActionInboxSnooze,
 		config.ActionInboxUndo, config.ActionInboxShowSnoozed, config.ActionInboxMark, config.ActionInboxMarkAll,
@@ -277,6 +277,7 @@ const HelpCategorySidebar = "Sidebar"
 // usual auto-selection.
 func (m *OS) OpenHelpAtCategory(name string) {
 	m.ShowHelp = true
+	m.helpBackToAgents = false
 	m.HelpScrollOffset = 0
 	m.HelpSearchMode = false
 	m.HelpSearchQuery = ""
@@ -287,6 +288,16 @@ func (m *OS) OpenHelpAtCategory(name string) {
 			return
 		}
 	}
+}
+
+// HelpClosed is called after the help overlay closes. Help opened from the
+// agents view opens that view again, on the agent it was on.
+func (m *OS) HelpClosed() {
+	if !m.helpBackToAgents {
+		return
+	}
+	m.helpBackToAgents = false
+	m.OpenInbox("")
 }
 
 // HelpStepCategory moves the help's section strip by delta under the list
@@ -328,11 +339,15 @@ func generateCategoryBindings(registry *config.KeybindRegistry, categoryName str
 // generateWorkspaceBindings generates all workspace-related bindings
 func generateWorkspaceBindings(registry *config.KeybindRegistry, s *config.Settings) []HelpBinding {
 	bindings := []HelpBinding{}
+	// Every live key from every section. GetKeys stops at the first section
+	// that names the action, and the workspaces section always does from the
+	// defaults, so a key bound in [keybindings.global] never showed (#1085).
+	presses := config.PressesByAction(registry)
 
 	// Add all 9 workspace switches
 	for i := 1; i <= 9; i++ {
 		action := fmt.Sprintf("switch_workspace_%d", i)
-		keys := registry.GetKeys(action)
+		keys := presses[action]
 		if len(keys) > 0 {
 			bindings = append(bindings, HelpBinding{
 				Action:      action,
@@ -346,12 +361,25 @@ func generateWorkspaceBindings(registry *config.KeybindRegistry, s *config.Setti
 	// Add all 9 move and follow actions
 	for i := 1; i <= 9; i++ {
 		action := fmt.Sprintf("move_and_follow_%d", i)
-		keys := registry.GetKeys(action)
+		keys := presses[action]
 		if len(keys) > 0 {
 			bindings = append(bindings, HelpBinding{
 				Action:      action,
 				Keys:        keys,
 				Description: fmt.Sprintf("Move to workspace %d and follow", i),
+				Category:    "Workspaces",
+			})
+		}
+	}
+
+	for i := 1; i <= 9; i++ {
+		action := fmt.Sprintf("send_to_workspace_%d", i)
+		keys := presses[action]
+		if len(keys) > 0 {
+			bindings = append(bindings, HelpBinding{
+				Action:      action,
+				Keys:        keys,
+				Description: fmt.Sprintf("Send the focused pane to workspace %d", i),
 				Category:    "Workspaces",
 			})
 		}
@@ -592,7 +620,11 @@ func generateCopyModeBindings(registry *config.KeybindRegistry, s *config.Settin
 			break
 		}
 	}
-	return slices.Insert(fixed, at, bound...)
+	out := slices.Insert(fixed, at, bound...)
+	if keys := registry.GetCopyModeKeys(config.ActionEditScrollback); len(keys) > 0 {
+		out = append(out, HelpBinding{Action: config.ActionEditScrollback, Keys: keys, Description: "Open the scrollback in the editor", Category: HelpCategoryCopyMode})
+	}
+	return out
 }
 
 // copyModeLineKeys is the row of copy mode's fixed line motions.
@@ -780,10 +812,11 @@ func generatePrefixBindings(registry *config.KeybindRegistry, s *config.Settings
 		"prefix_split_horizontal", "prefix_split_vertical", "prefix_rotate_split",
 		"prefix_equalize_splits", "prefix_layout",
 		"prefix_scrollback", "prefix_screenshot", "prefix_command_palette", "prefix_session_switcher",
-		"prefix_workspace_switcher", "choose_tree",
+		"prefix_workspace_switcher", "choose_tree", "goto_picker", "new_worktree",
 		"prefix_toggle_sidebar", "prefix_toggle_spotlight", "prefix_explore",
 		"prefix_jump_notif", "prefix_last_message", "prefix_mail", "prefix_inbox", "prefix_next_attention",
 		"toggle_scratch", "paste_image", "paste_buffer", "choose_buffer", "prefix_transfers",
+		config.ActionEditScrollback, config.ActionClearScrollback,
 		"hints", "hints_all_panes", "display_panes", config.ActionCopyModeSearchForward, config.ActionCopyModeSearchBackward,
 		// prefix_review and prefix_next_finished are listed only in the
 		// Agents section, which waits for an agent to have been seen.

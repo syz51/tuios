@@ -96,7 +96,7 @@ func (d *Daemon) handleExecuteCommand(cs *connState, msg *Message) error {
 	LogBasic("Received execute command: %s (session=%s, args=%v)", payload.CommandType, payload.SessionName, payload.Args)
 
 	// Find the target session
-	session := d.findTargetSession(payload.SessionName)
+	session := d.findTargetSession(cs, payload.SessionName)
 	if session == nil {
 		LogBasic("Execute command: session not found")
 		return d.sendCommandResult(cs, payload.RequestID, false, "session not found")
@@ -161,7 +161,7 @@ func (d *Daemon) handleExecuteCommand(cs *connState, msg *Message) error {
 			var win WindowState
 			if err == nil {
 				win, err = session.AddDaemonWindowWith(NewWindowOptions{
-					FocusIfShown: true, Cwd: payload.Cwd, Workspace: payload.Workspace,
+					FocusIfShown: true, Cwd: payload.Cwd, Workspace: payload.Workspace, TabKey: payload.TabKey,
 					Name: name, Command: command, Env: newWindowEnv,
 					InitialSize: payload.InitialSize,
 				}, onExit)
@@ -344,15 +344,23 @@ func (d *Daemon) routeToTUISync(tui *connState, requestID string, cmd *RemoteCom
 	}
 }
 
-// findTargetSession finds a session by name, or returns the most recently active session.
+// findTargetSession finds a session by name. With no name it is the session
+// of the pane the caller on cs runs in, and for a caller in no pane (the
+// person's CLI, a hook, a link) the most recently active session.
 // A name a session was renamed from still finds it: a pane started before the
 // rename keeps the old name in TUIOS_SESSION, and its commands send that.
-func (d *Daemon) findTargetSession(sessionName string) *Session {
+//
+// The pane's own session comes first because the most recent one is the
+// person's: an agent that left out -s used to read and type into whatever
+// session the person last touched, with nothing to tell it so.
+func (d *Daemon) findTargetSession(cs *connState, sessionName string) *Session {
 	if sessionName != "" {
 		sess, _ := d.manager.ResolveSession(sessionName)
 		return sess
 	}
-
+	if sess := d.callerSession(cs); sess != nil {
+		return sess
+	}
 	return d.manager.MostRecentSession()
 }
 

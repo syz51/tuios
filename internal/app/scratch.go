@@ -308,10 +308,7 @@ func (m *OS) leaveScratchView() {
 	if !m.InScratchView() {
 		return
 	}
-	base := m.scratchBase
-	if base < 1 {
-		base = 1
-	}
+	base := max(m.scratchBase, 1)
 	back := -1
 	for j, o := range m.Windows {
 		if m.scratchReturnID != "" && o.ID == m.scratchReturnID && o.Workspace == base && !o.Minimized {
@@ -722,6 +719,19 @@ func (m *OS) windowCountForNotice() int {
 	n := 0
 	for _, w := range m.Windows {
 		if !isScratch(w) {
+			n++
+		}
+	}
+	return n
+}
+
+// panesMadeForNotice counts the windows windowCountForNotice counts, less
+// the TML surfaces: a program opens and closes those, so their coming and
+// going is no window the person made or closed.
+func (m *OS) panesMadeForNotice() int {
+	n := 0
+	for _, w := range m.Windows {
+		if !isScratch(w) && w.Kind != session.WindowKindTML {
 			n++
 		}
 	}

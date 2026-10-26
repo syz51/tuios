@@ -4,10 +4,12 @@ import (
 	"encoding/binary"
 	"image/color"
 	"io"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	uv "github.com/charmbracelet/ultraviolet"
 	"github.com/charmbracelet/x/ansi"
@@ -367,8 +369,30 @@ func clustersJoin(a, b string) bool {
 		// a text screen.
 		return false
 	}
+	last, _ := utf8.DecodeLastRuneInString(a)
+	first, _ := utf8.DecodeRuneInString(b)
+	if neverJoins(last) && neverJoins(first) {
+		// Symbol screens are made of these pairs, and asking the segmenter
+		// concatenates and runs it for each one.
+		return false
+	}
 	cl, _ := ansi.FirstGraphemeCluster(a+b, ansi.GraphemeWidth)
 	return len(cl) > len(a)
+}
+
+// neverJoins reports whether r is in a range where no rune can take part in a
+// rule that joins two clusters. UAX #29 joins across a boundary only when one
+// of the two runes is CR or LF, Hangul jamo, Extend, ZWJ, SpacingMark,
+// Prepend, a Regional_Indicator or an Indic conjunct class, and nothing in
+// U+0020 to U+02FF (Latin), U+2100 to U+2BFF (letterlike symbols, arrows,
+// maths, box drawing, blocks, shapes, dingbats, braille) or U+E000 to U+F8FF
+// (the private use area, where Powerline and icon fonts live) has any of
+// them. The range starts at U+0020 and not at zero so that CR, which joins LF,
+// stays out whatever the ASCII check above it does.
+func neverJoins(r rune) bool {
+	return r >= 0x20 && r <= 0x2FF ||
+		r >= 0x2100 && r <= 0x2BFF ||
+		r >= 0xE000 && r <= 0xF8FF
 }
 
 // Render renders a snapshot of the terminal screen as a string with styles and
@@ -786,6 +810,10 @@ func (e *Emulator) CursorPosition() uv.Position {
 	return uv.Pos(x, y)
 }
 
+// maxReserveScroll bounds the rows ReserveImageSpace scrolls for one picture:
+// the default scrollback, as rows past it are gone anyway.
+const maxReserveScroll = DefaultScrollbackSize
+
 // ReserveImageSpace reserves space for an image by moving cursor and outputting placeholders.
 // This ensures subsequent output appears below the image rather than on top of it.
 func (e *Emulator) ReserveImageSpace(rows, cols int) {
@@ -799,9 +827,12 @@ func (e *Emulator) ReserveImageSpace(rows, cols int) {
 	endY := startY + rows
 	scrollCount := 0
 	if endY > height {
-		// clamp: rows beyond the viewport cannot be shown, and a hostile r=
-		// could otherwise drive ~1e9 ScrollUp calls while holding the IO lock.
-		scrollCount = min(endY-height, height)
+		// Clamped to maxReserveScroll: a hostile r= could otherwise drive
+		// ~1e9 ScrollUp calls while holding the IO lock. The clamp is not the
+		// screen height: a picture taller than the screen, a long diagram,
+		// runs into the scrollback, and every row of it has to be reserved
+		// or the next output is drawn over its bottom.
+		scrollCount = min(endY-height, maxReserveScroll)
 		// Scroll with a blank pen. ScrollUp fills the rows it exposes with the
 		// pen background (background-colour erase), which is right for a scroll
 		// the guest caused by printing, but this one is ours: the guest emitted
@@ -1402,6 +1433,10 @@ func (e *Emulator) TakeResponses() []byte {
 	return e.pipe.take()
 }
 
+// OnResponse sets a function called each time a reply is queued, on the
+// goroutine that queued it. It must not block. nil clears it.
+func (e *Emulator) OnResponse(fn func()) { e.pipe.setNotify(fn) }
+
 // Close closes the terminal.
 func (e *Emulator) Close() error {
 	if e.closed.Load() {
@@ -1939,8 +1974,8 @@ func (e *Emulator) registerSixelGraphicsHandler() {
 					val /= 10
 				}
 				// Reverse digits
-				for i := len(digits) - 1; i >= 0; i-- {
-					fullData = append(fullData, digits[i])
+				for _, digit := range slices.Backward(digits) {
+					fullData = append(fullData, digit)
 				}
 			}
 		}

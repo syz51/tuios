@@ -1,4 +1,4 @@
-// Ported from pele src/diagrams/quadrant/lexer.ts at 8fad23bd51783e4df1204e177a7fb0d2a30dcd13.
+// Ported from pele src/diagrams/quadrant/lexer.ts at 4eff76f98c73b6817800a05773517f35832e4e92.
 //
 // As in the other lexers, the port reads UTF-8 bytes: code() decodes the character at a
 // byte offset, and a step past a character that may not be ASCII steps the whole
@@ -267,11 +267,6 @@ lexing:
 
 		if c == 37 && next == 37 {
 			l.p = l.lineEnd(p + 2)
-			continue
-		}
-		// Mermaid's second comment rule takes any character before `%%` with it, a line break included.
-		if c != 125 && next == 37 && l.code(p+size+1) == 37 {
-			l.p = l.lineEnd(p + size + 2)
 			continue
 		}
 		if c == 10 || c == 13 {

@@ -201,6 +201,13 @@ func (d *Daemon) stopSSHAgent() {
 // client to connect to. It runs once, before any session is restored.
 func (d *Daemon) startSSHAgent() {
 	d.sweepAgentLinks()
+	d.initSSHAgent()
+}
+
+// initSSHAgent is startSSHAgent without the sweep. A daemon image adopting
+// its predecessor's panes runs it alone: the links are the ones those panes'
+// SSH_AUTH_SOCK names.
+func (d *Daemon) initSSHAgent() {
 	fallback, _ := resolveAgentSocket(os.Getenv("SSH_AUTH_SOCK"))
 	d.sshAgent.mu.Lock()
 	d.sshAgent.fallback = fallback
@@ -573,7 +580,7 @@ func (m *Manager) SSHAgentFollow() bool { return m.sshAgentFollow.Load() }
 func (m *Manager) SetSSHAgentFollow(on bool) { m.sshAgentFollow.Store(on) }
 
 // verbSSHAgentPath reports a session's agent link and where it points.
-func (d *Daemon) verbSSHAgentPath(_ *connState, params json.RawMessage) (any, *verbError) {
+func (d *Daemon) verbSSHAgentPath(cs *connState, params json.RawMessage) (any, *verbError) {
 	var p struct {
 		Session string `json:"session"`
 	}
@@ -583,7 +590,7 @@ func (d *Daemon) verbSSHAgentPath(_ *connState, params json.RawMessage) (any, *v
 	if strings.TrimSpace(p.Session) == "" {
 		return nil, invalidParam("session", "session is the session whose agent link to print and cannot be empty")
 	}
-	sess, verr := d.resolveVerbSession(p.Session)
+	sess, verr := d.resolveVerbSession(cs, p.Session)
 	if verr != nil {
 		return nil, verr
 	}

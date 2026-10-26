@@ -63,6 +63,7 @@ func closeHelp(o *app.OS) {
 	o.HelpCategory = -1
 	o.HelpSearchQuery = ""
 	o.HelpSearchMode = false
+	o.HelpClosed()
 }
 
 // handleHelpOverlayKey handles a key while the help overlay is open. Help is
@@ -132,6 +133,11 @@ func handleHelpOverlayKey(msg tea.KeyPressMsg, o *app.OS) (*app.OS, tea.Cmd) {
 				o.HelpSearchQuery = o.HelpSearchQuery[:len(o.HelpSearchQuery)-size]
 				o.HelpScrollOffset = 0 // Reset scroll when query changes
 			}
+			return o, nil
+		}
+		if key == "ctrl+u" {
+			o.HelpSearchQuery = ""
+			o.HelpScrollOffset = 0
 			return o, nil
 		}
 

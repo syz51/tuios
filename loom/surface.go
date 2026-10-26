@@ -40,6 +40,11 @@ type Options struct {
 	// Off by default: a click on a link comes back as a "link" Effect, so
 	// the host can ask the person first, as TML requires.
 	Hyperlinks bool
+	// Placement says where the host shows the surface, such as "popup" or
+	// "pane". A binding reads it as view.placement, so a document can show
+	// the keys that work where it is, such as "esc close" in a popup only.
+	// SetPlacement changes it.
+	Placement string
 }
 
 // Surface is one TML document drawn into a cell buffer: the tree, the state
@@ -62,6 +67,8 @@ type Surface struct {
 	mode  plot.Mode
 
 	cache map[*tml.Node]*compiled
+	// sketches keeps the Mermaid diagrams drawn, by source and width.
+	sketches *sketchCache
 
 	root  *box
 	byPtr map[string][]*box
@@ -86,6 +93,12 @@ type Surface struct {
 	// focused box into view. A wheel scroll leaves it, so the person can
 	// look away from the focus.
 	focusMoved bool
+	// relayout says the page scrolled: the next Render places and paints
+	// again, with no binding evaluated.
+	relayout bool
+	// reveal says the focused box took a key: the next layout of a page
+	// brings its cursor into view.
+	reveal bool
 
 	// The work of the last Render, for the budgets the tests hold.
 	stats renderStats
@@ -200,9 +213,33 @@ func deepCopy(v any) any {
 // only through input.
 func (s *Surface) View() *View { return cloneView(s.view) }
 
+// SetView replaces this client's view state with a copy of v, as View
+// returned it: for example the view another client of the same surface
+// reported, to draw what that client shows. A key that names no node does
+// nothing. Nil clears the view. The next Render builds the tree again.
+func (s *Surface) SetView(v *View) {
+	nv := newView()
+	if v != nil {
+		maps.Copy(nv.Tabs, v.Tabs)
+		maps.Copy(nv.Sort, v.Sort)
+		maps.Copy(nv.Filter, v.Filter)
+		maps.Copy(nv.Fold, v.Fold)
+		maps.Copy(nv.Cursor, v.Cursor)
+		maps.Copy(nv.Scroll, v.Scroll)
+		maps.Copy(nv.Split, v.Split)
+		maps.Copy(nv.Text, v.Text)
+		maps.Copy(nv.Caret, v.Caret)
+		nv.Focus, nv.Page, nv.PageAnchor, nv.PageRow = v.Focus, v.Page, v.PageAnchor, v.PageRow
+	}
+	s.view = nv
+	s.full = true
+}
+
 func cloneView(v *View) *View {
 	return &View{Tabs: maps.Clone(v.Tabs), Sort: maps.Clone(v.Sort), Filter: maps.Clone(v.Filter), Fold: maps.Clone(v.Fold),
-		Focus: v.Focus, Cursor: maps.Clone(v.Cursor), Scroll: maps.Clone(v.Scroll), Split: maps.Clone(v.Split)}
+		Focus: v.Focus, Cursor: maps.Clone(v.Cursor), Scroll: maps.Clone(v.Scroll), Split: maps.Clone(v.Split),
+		Text: maps.Clone(v.Text), Caret: maps.Clone(v.Caret), Page: v.Page,
+		PageAnchor: v.PageAnchor, PageRow: v.PageRow}
 }
 
 // Patch applies a JSON Patch from the owner to the state. Only the boxes
@@ -229,7 +266,7 @@ func (s *Surface) addPending(changed []string) {
 // flush brings the boxes up to date with pending changes before input
 // acts on them, at the last size.
 func (s *Surface) flush() {
-	if s.root != nil && (s.full || len(s.pending) > 0 || len(s.viewDue) > 0 || s.clock) {
+	if s.root != nil && (s.full || len(s.pending) > 0 || len(s.viewDue) > 0 || s.clock || s.relayout) {
 		s.Render(s.w, s.h)
 	}
 }
@@ -260,6 +297,17 @@ func (s *Surface) Replace(doc *tml.Node, keepState bool) error {
 		store = st
 	}
 	return s.setDoc(doc, store)
+}
+
+// SetPlacement changes where the host shows the surface, which a binding
+// reads as view.placement. A change makes the next Render build the tree
+// again; the same placement does nothing.
+func (s *Surface) SetPlacement(p string) {
+	if p == s.opts.Placement {
+		return
+	}
+	s.opts.Placement = p
+	s.full = true
 }
 
 // NeedsClock reports whether a binding calls ago(). Then the host calls
@@ -320,12 +368,13 @@ func (s *Surface) Render(w, h int) *Buffer {
 	s.budget = tml.NewBudget()
 	if s.full || s.root == nil {
 		s.rebuildAll()
-	} else if !s.rebuildDirty() {
+	} else if !s.rebuildDirty() && !s.relayout {
 		return s.out
 	}
+	s.relayout = false
 
 	s.layoutRoot()
-	s.focusMoved = false
+	s.focusMoved, s.reveal = false, false
 	if s.links == nil || s.full {
 		s.links = map[image.Point]string{}
 	}
@@ -360,6 +409,7 @@ func (s *Surface) rebuildAll() {
 	root := &box{kind: "tml", src: s.doc, key: "", dirty: true}
 	if s.doc.Type == "tml" {
 		root.kids = s.buildChildren(s.doc, "", nil, root)
+		root.w = &pageWidget{}
 	} else {
 		// A fragment, such as the one row of a dock cell.
 		root.kids = s.build(s.doc, "", nil, root)
@@ -530,7 +580,7 @@ func (s *Surface) markView(key string) {
 func (s *Surface) vars(sc *scope) map[string]any {
 	m := map[string]any{
 		"state": s.store.State(),
-		"view":  map[string]any{"width": float64(s.w), "height": float64(s.h), "band": band(s.w)},
+		"view":  map[string]any{"width": float64(s.w), "height": float64(s.h), "band": band(s.w), "placement": s.opts.Placement},
 	}
 	sc.vars(m)
 	return m
@@ -756,7 +806,7 @@ func walkPointer(v any, ptr string) any {
 	if ptr == "" {
 		return v
 	}
-	for _, tok := range strings.Split(ptr[1:], "/") {
+	for tok := range strings.SplitSeq(ptr[1:], "/") {
 		tok = strings.ReplaceAll(strings.ReplaceAll(tok, "~1", "/"), "~0", "~")
 		switch x := v.(type) {
 		case map[string]any:

@@ -1,4 +1,4 @@
-// Ported from pele src/diagrams/flowchart/types.ts at 8fad23bd51783e4df1204e177a7fb0d2a30dcd13.
+// Ported from pele src/diagrams/flowchart/types.ts at 4eff76f98c73b6817800a05773517f35832e4e92.
 //
 // An optional string of pele is "" here where pele never tells it from an
 // empty one, and a pointer where it does.

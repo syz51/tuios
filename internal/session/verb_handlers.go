@@ -5,11 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"image/color"
 	"maps"
 	"os"
 	"path/filepath"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -17,6 +19,7 @@ import (
 	"github.com/Gaurav-Gosain/tuios/internal/config"
 	"github.com/Gaurav-Gosain/tuios/internal/federation"
 	"github.com/Gaurav-Gosain/tuios/internal/harness"
+	"github.com/Gaurav-Gosain/tuios/internal/transcriptview"
 	"github.com/google/uuid"
 	"tuios.dev/vt"
 )
@@ -40,11 +43,12 @@ func decodeParams(params json.RawMessage, v any) *verbError {
 	return nil
 }
 
-// resolveVerbSession resolves a session name (empty means most recently active)
-// to a live session, or a session_not_found error whose hint lists the sessions
-// that do exist and suggests the closest name.
-func (d *Daemon) resolveVerbSession(name string) (*Session, *verbError) {
-	sess := d.findTargetSession(name)
+// resolveVerbSession resolves a session name to a live session, or a
+// session_not_found error whose hint lists the sessions that do exist and
+// suggests the closest name. An empty name is the caller's own session, or
+// the most recently active one for a caller in no pane (findTargetSession).
+func (d *Daemon) resolveVerbSession(cs *connState, name string) (*Session, *verbError) {
+	sess := d.findTargetSession(cs, name)
 	if sess != nil {
 		return sess, nil
 	}
@@ -101,7 +105,7 @@ func mapResolveErr(err error, sess *Session) *verbError {
 		hint := &VerbHint{
 			Param:   "window",
 			Verb:    "list-windows",
-			Command: "tuios list-windows --json",
+			Command: "tuios list-windows",
 			Detail:  "the window target matched no window. A window is addressable by its id, a unique id prefix, the index list-windows prints, or its exact name.",
 		}
 		if strings.Contains(msg, "ambiguous window") {
@@ -110,8 +114,10 @@ func mapResolveErr(err error, sess *Session) *verbError {
 			hint.Detail = "the window target matched more than one window, listed in the message. Pass the id, or give the windows different names with set-window --name."
 		}
 		if sess != nil {
-			hint.Available = windowTargets(sess.GetState())
-			hint.DidYouMean = closestMatch(targetFromError(msg), hint.Available)
+			state := sess.GetState()
+			hint.Command = "tuios list-windows " + sessionArg(sess)
+			hint.Available = windowChoices(state)
+			hint.DidYouMean = closestMatch(targetFromError(msg), windowTargets(state))
 		}
 		return hintedVerbError(ErrVerbWindowNotFound, msg, hint)
 	}
@@ -155,14 +161,14 @@ func (d *Daemon) verbListClients(_ *connState, _ json.RawMessage) (any, *verbErr
 	}, nil
 }
 
-func (d *Daemon) verbSessionInfo(_ *connState, params json.RawMessage) (any, *verbError) {
+func (d *Daemon) verbSessionInfo(cs *connState, params json.RawMessage) (any, *verbError) {
 	var p struct {
 		Session string `json:"session"`
 	}
 	if verr := decodeParams(params, &p); verr != nil {
 		return nil, verr
 	}
-	sess, verr := d.resolveVerbSession(p.Session)
+	sess, verr := d.resolveVerbSession(cs, p.Session)
 	if verr != nil {
 		return nil, verr
 	}
@@ -177,14 +183,14 @@ func (d *Daemon) verbSessionInfo(_ *connState, params json.RawMessage) (any, *ve
 	return data, nil
 }
 
-func (d *Daemon) verbListWindows(_ *connState, params json.RawMessage) (any, *verbError) {
+func (d *Daemon) verbListWindows(cs *connState, params json.RawMessage) (any, *verbError) {
 	var p struct {
 		Session string `json:"session"`
 	}
 	if verr := decodeParams(params, &p); verr != nil {
 		return nil, verr
 	}
-	sess, verr := d.resolveVerbSession(p.Session)
+	sess, verr := d.resolveVerbSession(cs, p.Session)
 	if verr != nil {
 		return nil, verr
 	}
@@ -221,12 +227,12 @@ func addResumable(d *Daemon, state *SessionState, data map[string]any) {
 // cursor and process fields, and with none attached the daemon gives the
 // window's list-windows entry. The window is resolved here either way, so a
 // target that matches nothing is the same error attached or not.
-func (d *Daemon) verbGetWindow(_ *connState, params json.RawMessage) (any, *verbError) {
+func (d *Daemon) verbGetWindow(cs *connState, params json.RawMessage) (any, *verbError) {
 	var p commonParams
 	if verr := decodeParams(params, &p); verr != nil {
 		return nil, verr
 	}
-	sess, verr := d.resolveVerbSession(p.Session)
+	sess, verr := d.resolveVerbSession(cs, p.Session)
 	if verr != nil {
 		return nil, verr
 	}
@@ -321,7 +327,7 @@ func (d *Daemon) verbNewWindow(cs *connState, params json.RawMessage) (any, *ver
 	if verr != nil {
 		return nil, verr
 	}
-	sess, verr := d.resolveVerbSession(p.Session)
+	sess, verr := d.resolveVerbSession(cs, p.Session)
 	if verr != nil {
 		return nil, verr
 	}
@@ -383,18 +389,19 @@ func (d *Daemon) verbNewWindow(cs *connState, params json.RawMessage) (any, *ver
 		}
 	}
 	win, bverr, err := d.addWindowFor(cs, "new-window", sess, NewWindowOptions{
-		keepOpen:  p.KeepOpen,
-		Title:     p.Name,
-		Cwd:       p.Cwd,
-		Workspace: p.Workspace,
-		Focus:     focus,
-		Command:   p.Command,
-		Name:      p.Name,
-		Host:      p.Host,
-		Grants:    grants,
-		Env:       env,
-		Kind:      p.Kind,
-		URI:       p.URI,
+		keepOpen:    p.KeepOpen,
+		closeOnExit: p.CloseOnExit,
+		Title:       p.Name,
+		Cwd:         p.Cwd,
+		Workspace:   p.Workspace,
+		Focus:       focus,
+		Command:     p.Command,
+		Name:        p.Name,
+		Host:        p.Host,
+		Grants:      grants,
+		Env:         env,
+		Kind:        p.Kind,
+		URI:         p.URI,
 	}, onExit)
 	if bverr != nil {
 		return nil, bverr
@@ -574,7 +581,7 @@ func (d *Daemon) verbPopup(cs *connState, params json.RawMessage) (any, *verbErr
 	if verr := decodeParams(params, &p); verr != nil {
 		return nil, verr
 	}
-	sess, verr := d.resolveVerbSession(p.Session)
+	sess, verr := d.resolveVerbSession(cs, p.Session)
 	if verr != nil {
 		return nil, verr
 	}
@@ -786,12 +793,12 @@ func newWindowErr(err error, sess *Session, ws int) *verbError {
 	return mapResolveErr(err, sess)
 }
 
-func (d *Daemon) verbCloseWindow(_ *connState, params json.RawMessage) (any, *verbError) {
+func (d *Daemon) verbCloseWindow(cs *connState, params json.RawMessage) (any, *verbError) {
 	var p commonParams
 	if verr := decodeParams(params, &p); verr != nil {
 		return nil, verr
 	}
-	sess, verr := d.resolveVerbSession(p.Session)
+	sess, verr := d.resolveVerbSession(cs, p.Session)
 	if verr != nil {
 		return nil, verr
 	}
@@ -838,7 +845,7 @@ func (d *Daemon) closeWindowOfPTY(sess *Session, ptyID string, popupOnly bool) {
 // verbCloseWorkspace closes every pane on one workspace. A scratch pane is
 // left alone unless the workspace named is a scratch workspace: a scratch
 // group is closed only when it is the target.
-func (d *Daemon) verbCloseWorkspace(_ *connState, params json.RawMessage) (any, *verbError) {
+func (d *Daemon) verbCloseWorkspace(cs *connState, params json.RawMessage) (any, *verbError) {
 	var p struct {
 		Session   string `json:"session"`
 		Workspace int    `json:"workspace"`
@@ -846,7 +853,7 @@ func (d *Daemon) verbCloseWorkspace(_ *connState, params json.RawMessage) (any, 
 	if verr := decodeParams(params, &p); verr != nil {
 		return nil, verr
 	}
-	sess, verr := d.resolveVerbSession(p.Session)
+	sess, verr := d.resolveVerbSession(cs, p.Session)
 	if verr != nil {
 		return nil, verr
 	}
@@ -895,6 +902,9 @@ func (d *Daemon) verbSendKeys(cs *connState, params json.RawMessage) (any, *verb
 		Literal bool   `json:"literal"`
 		Raw     bool   `json:"raw"`
 		Repeat  int    `json:"repeat"`
+		// AllowBlocked lets a pane send keys to a pane on needs_input
+		// (typingBlocked).
+		AllowBlocked bool `json:"allow_blocked"`
 	}
 	if verr := decodeParams(params, &p); verr != nil {
 		return nil, verr
@@ -906,7 +916,7 @@ func (d *Daemon) verbSendKeys(cs *connState, params json.RawMessage) (any, *verb
 		return nil, invalidParam("repeat", fmt.Sprintf("repeat must be between 1 and %d, got %d", maxSendKeysRepeat, p.Repeat))
 	}
 	repeat := max(p.Repeat, 1)
-	sess, verr := d.resolveVerbSession(p.Session)
+	sess, verr := d.resolveVerbSession(cs, p.Session)
 	if verr != nil {
 		return nil, verr
 	}
@@ -939,6 +949,9 @@ func (d *Daemon) verbSendKeys(cs *connState, params json.RawMessage) (any, *verb
 		}
 	}
 	if verr := d.recheckTyping(cs, "send-keys", sess, p.Window); verr != nil {
+		return nil, verr
+	}
+	if verr := d.recheckBlocked(cs, "send-keys", sess, p.Window, p.AllowBlocked); verr != nil {
 		return nil, verr
 	}
 
@@ -1049,11 +1062,14 @@ func (d *Daemon) verbSendText(cs *connState, params json.RawMessage) (any, *verb
 		Text    string `json:"text"`
 		Paste   bool   `json:"paste"`
 		Submit  bool   `json:"submit"`
+		// AllowBlocked lets a pane type into a pane on needs_input
+		// (typingBlocked).
+		AllowBlocked bool `json:"allow_blocked"`
 	}
 	if verr := decodeParams(params, &p); verr != nil {
 		return nil, verr
 	}
-	sess, verr := d.resolveVerbSession(p.Session)
+	sess, verr := d.resolveVerbSession(cs, p.Session)
 	if verr != nil {
 		return nil, verr
 	}
@@ -1068,6 +1084,9 @@ func (d *Daemon) verbSendText(cs *connState, params json.RawMessage) (any, *verb
 	if verr := d.recheckTyping(cs, "send-text", sess, p.Window); verr != nil {
 		return nil, verr
 	}
+	if verr := d.recheckBlocked(cs, "send-text", sess, p.Window, p.AllowBlocked); verr != nil {
+		return nil, verr
+	}
 	if p.Submit {
 		// The prompt path ask-agent types with: one paste, a wait for the
 		// program to take it in, and the harness's own submit key.
@@ -1077,7 +1096,16 @@ func (d *Daemon) verbSendText(cs *connState, params json.RawMessage) (any, *verb
 		} else if idx, err := findWindowStateIndex(sess.GetState().Windows, window); err == nil {
 			window = sess.GetState().Windows[idx].ID
 		}
-		if _, err := submitPrompt(d.ctx, pty, p.Text, d.inputProfileFor(sess, window)); err != nil {
+		// The pane is checked again right before the submit key: it can
+		// come to a prompt while the paste is taken in, and the Enter
+		// would answer it.
+		ctx := withSubmitGuard(d.ctx, func() *verbError {
+			if verr := d.recheckTyping(cs, "send-text", sess, window); verr != nil {
+				return verr
+			}
+			return d.recheckBlocked(cs, "send-text", sess, window, p.AllowBlocked)
+		})
+		if _, err := submitPrompt(ctx, pty, p.Text, d.inputProfileFor(sess, window)); err != nil {
 			return nil, ptyWriteError(err)
 		}
 		return map[string]any{"type": "ok"}, nil
@@ -1110,6 +1138,10 @@ func paneBusyError(err error) *verbError {
 // take: busy when the pane has not read the last large input, internal
 // otherwise.
 func promptWriteError(err error) *verbError {
+	if ve := (*verbError)(nil); errors.As(err, &ve) {
+		// A submit guard refused (withSubmitGuard).
+		return ve
+	}
 	if errors.Is(err, errPaneInputBusy) {
 		return paneBusyError(err)
 	}
@@ -1117,6 +1149,10 @@ func promptWriteError(err error) *verbError {
 }
 
 func ptyWriteError(err error) *verbError {
+	if ve := (*verbError)(nil); errors.As(err, &ve) {
+		// A submit guard refused (withSubmitGuard).
+		return ve
+	}
 	if errors.Is(err, errPaneInputBusy) {
 		return paneBusyError(err)
 	}
@@ -1129,7 +1165,7 @@ func ptyWriteError(err error) *verbError {
 	return newVerbError(ErrVerbInternal, err.Error())
 }
 
-func (d *Daemon) verbCapturePane(_ *connState, params json.RawMessage) (any, *verbError) {
+func (d *Daemon) verbCapturePane(cs *connState, params json.RawMessage) (any, *verbError) {
 	var p struct {
 		Session    string   `json:"session"`
 		Window     string   `json:"window"`
@@ -1144,6 +1180,7 @@ func (d *Daemon) verbCapturePane(_ *connState, params json.RawMessage) (any, *ve
 		Palette    []string `json:"palette"`    // 16 hex colours to resolve against (default: xterm)
 		Unwrap     bool     `json:"unwrap"`     // join the rows the terminal soft-wrapped
 		Trim       bool     `json:"trim"`       // drop the blank lines at the end
+		Commands   int      `json:"commands"`   // the last N shell commands, under lines in total
 	}
 	if verr := decodeParams(params, &p); verr != nil {
 		return nil, verr
@@ -1151,18 +1188,41 @@ func (d *Daemon) verbCapturePane(_ *connState, params json.RawMessage) (any, *ve
 	if verr := validateCaptureSource(p.Source); verr != nil {
 		return nil, verr
 	}
-	sess, verr := d.resolveVerbSession(p.Session)
+	if p.Commands < 0 {
+		return nil, invalidParam("commands", "commands is how many of the last shell commands to capture, 1 or more")
+	}
+	if p.Commands > 0 {
+		switch {
+		case p.Source != "" && p.Source != "recent":
+			return nil, invalidParam("commands", "commands reads the scrollback, so it takes no source other than recent")
+		case p.Start > 0 || p.End > 0:
+			return nil, invalidParam("commands", "commands takes no start or end. Use lines for the most lines to keep")
+		case p.Unwrap:
+			return nil, invalidParam("commands", "commands takes no unwrap")
+		}
+		p.Scrollback = true
+	}
+	sess, verr := d.resolveVerbSession(cs, p.Session)
 	if verr != nil {
 		return nil, verr
 	}
 
-	pty, err := d.resolvePTYForTarget(sess, p.Window)
-	if err != nil {
-		return nil, mapResolveErr(err, sess)
+	win, pty, verr := d.resolveWindowPTY(sess, p.Window)
+	if verr != nil {
+		return nil, verr
+	}
+
+	if win.Kind == WindowKindTML && p.Source != captureLastCommand {
+		// The PTY runs only the placeholder line, so the surface is drawn
+		// instead, whatever source, scrollback or commands asked for: a
+		// surface has no history. See tml_capture.go.
+		if out, verr := d.captureTMLPane(win, pty, p.Styled || p.ANSI || p.Resolved, p.Resolved, p.Palette, p.Trim, p.Start, p.End, p.Lines); verr != nil || out != nil {
+			return out, verr
+		}
 	}
 
 	if p.Source == captureLastCommand {
-		return captureLastCommandOutput(pty, p.Window, p.Styled || p.ANSI || p.Resolved, p.Unwrap, p.Trim, p.Start, p.End, p.Lines)
+		return captureLastCommandOutput(sess, pty, p.Window, p.Styled || p.ANSI || p.Resolved, p.Unwrap, p.Trim, p.Start, p.End, p.Lines)
 	}
 
 	scrollback := p.Scrollback || p.Source == "recent"
@@ -1170,21 +1230,59 @@ func (d *Daemon) verbCapturePane(_ *connState, params json.RawMessage) (any, *ve
 	// escape sequences, and the reply must admit what the content carries
 	// instead of reporting styled=false beside a rewritten capture.
 	ansi := p.Styled || p.ANSI || p.Resolved
-	var content string
-	var meta paneMeta
+	var palette [16]color.Color
 	if p.Resolved {
-		palette, verr := paletteFromParams(p.Palette)
-		if verr != nil {
+		var verr *verbError
+		if palette, verr = paletteFromParams(p.Palette); verr != nil {
 			return nil, verr
 		}
+	}
+	var content string
+	var meta paneMeta
+	// commandMarks is set by a commands capture: true when the pane's marks
+	// cut the capture into commands, false when it fell back to lines.
+	var commandMarks *bool
+	var commandList []map[string]any
+	commandsAvailable := 0
+	omitted := -1
+	if p.Commands > 0 {
+		ceiling := p.Lines
+		if ceiling <= 0 {
+			ceiling = defaultCommandCeiling
+		}
+		rows, blocks, m, ok := pty.captureCommandRows(ansi)
+		commandMarks = &ok
+		if ok {
+			meta, commandsAvailable = m, len(blocks)
+			content, omitted, commandList = captureCommands(rows, blocks, p.Commands, ceiling)
+			if p.Resolved {
+				content = ResolveSGR(content, palette)
+			}
+		} else {
+			// No marks to cut by: the last ceiling lines, as lines gives.
+			p.Lines = ceiling
+		}
+	}
+	byCommands := commandMarks != nil && *commandMarks
+	switch {
+	case byCommands:
+		// Built above.
+	case p.Resolved:
 		content, meta = pty.CaptureContentResolvedMeta(scrollback, palette, p.Unwrap)
-	} else {
+	default:
 		content, meta = pty.CaptureContentMeta(scrollback, ansi, p.Unwrap)
 	}
 	if p.Trim {
 		content = trimCapture(content)
 	}
-	content = sliceCaptureLines(content, p.Start, p.End, p.Lines)
+	if !byCommands {
+		// Counted before the cut, so the caller can tell a capture that
+		// lines shortened from one that held everything.
+		if p.Lines > 0 && p.Start <= 0 && p.End <= 0 {
+			omitted = max(captureLineCount(content)-p.Lines, 0)
+		}
+		content = sliceCaptureLines(content, p.Start, p.End, p.Lines)
+	}
 
 	source := p.Source
 	if source == "" {
@@ -1211,6 +1309,16 @@ func (d *Daemon) verbCapturePane(_ *connState, params json.RawMessage) (any, *ve
 	if p.Trim {
 		out["trimmed"] = true
 	}
+	if omitted >= 0 {
+		out["lines_omitted"] = omitted
+	}
+	if commandMarks != nil {
+		out["command_marks"] = *commandMarks
+		if *commandMarks {
+			out["commands"] = commandList
+			out["commands_available"] = commandsAvailable
+		}
+	}
 	// A revision counts from 0 again when the daemon restarts, so it is a
 	// cache key only beside the daemon start it came from.
 	if d.events != nil {
@@ -1219,7 +1327,7 @@ func (d *Daemon) verbCapturePane(_ *connState, params json.RawMessage) (any, *ve
 	return out, nil
 }
 
-func (d *Daemon) verbResize(_ *connState, params json.RawMessage) (any, *verbError) {
+func (d *Daemon) verbResize(cs *connState, params json.RawMessage) (any, *verbError) {
 	var p struct {
 		Session string `json:"session"`
 		Window  string `json:"window"`
@@ -1232,7 +1340,7 @@ func (d *Daemon) verbResize(_ *connState, params json.RawMessage) (any, *verbErr
 	if p.Width <= 0 || p.Height <= 0 {
 		return nil, invalidParam("width", "width and height must both be positive")
 	}
-	sess, verr := d.resolveVerbSession(p.Session)
+	sess, verr := d.resolveVerbSession(cs, p.Session)
 	if verr != nil {
 		return nil, verr
 	}
@@ -1279,7 +1387,7 @@ func (d *Daemon) verbKillSession(_ *connState, params json.RawMessage) (any, *ve
 	return map[string]any{"type": "ok"}, nil
 }
 
-func (d *Daemon) verbSetSessionName(_ *connState, params json.RawMessage) (any, *verbError) {
+func (d *Daemon) verbSetSessionName(cs *connState, params json.RawMessage) (any, *verbError) {
 	var p struct {
 		Session string `json:"session"`
 		Name    string `json:"name"`
@@ -1287,7 +1395,7 @@ func (d *Daemon) verbSetSessionName(_ *connState, params json.RawMessage) (any, 
 	if verr := decodeParams(params, &p); verr != nil {
 		return nil, verr
 	}
-	sess, verr := d.resolveVerbSession(p.Session)
+	sess, verr := d.resolveVerbSession(cs, p.Session)
 	if verr != nil {
 		return nil, verr
 	}
@@ -1300,7 +1408,7 @@ func (d *Daemon) verbSetSessionName(_ *connState, params json.RawMessage) (any, 
 	return map[string]any{"type": "session_name_set", "session": sess.Name(), "display_name": name}, nil
 }
 
-func (d *Daemon) verbSetSessionAccent(_ *connState, params json.RawMessage) (any, *verbError) {
+func (d *Daemon) verbSetSessionAccent(cs *connState, params json.RawMessage) (any, *verbError) {
 	var p struct {
 		Session string `json:"session"`
 		Accent  string `json:"accent"`
@@ -1308,7 +1416,7 @@ func (d *Daemon) verbSetSessionAccent(_ *connState, params json.RawMessage) (any
 	if verr := decodeParams(params, &p); verr != nil {
 		return nil, verr
 	}
-	sess, verr := d.resolveVerbSession(p.Session)
+	sess, verr := d.resolveVerbSession(cs, p.Session)
 	if verr != nil {
 		return nil, verr
 	}
@@ -1319,7 +1427,7 @@ func (d *Daemon) verbSetSessionAccent(_ *connState, params json.RawMessage) (any
 	return map[string]any{"type": "session_accent_set", "session": sess.Name(), "accent": accent}, nil
 }
 
-func (d *Daemon) verbSetWorkspaceName(_ *connState, params json.RawMessage) (any, *verbError) {
+func (d *Daemon) verbSetWorkspaceName(cs *connState, params json.RawMessage) (any, *verbError) {
 	var p struct {
 		Session   string `json:"session"`
 		Workspace int    `json:"workspace"`
@@ -1331,7 +1439,7 @@ func (d *Daemon) verbSetWorkspaceName(_ *connState, params json.RawMessage) (any
 	if p.Workspace == 0 {
 		return nil, invalidParam("workspace", "workspace is required and is the workspace number, e.g. 1")
 	}
-	sess, verr := d.resolveVerbSession(p.Session)
+	sess, verr := d.resolveVerbSession(cs, p.Session)
 	if verr != nil {
 		return nil, verr
 	}
@@ -1342,7 +1450,7 @@ func (d *Daemon) verbSetWorkspaceName(_ *connState, params json.RawMessage) (any
 	return map[string]any{"type": "workspace_name_set", "workspace": p.Workspace, "name": name}, nil
 }
 
-func (d *Daemon) verbSetWorkspaceOrder(_ *connState, params json.RawMessage) (any, *verbError) {
+func (d *Daemon) verbSetWorkspaceOrder(cs *connState, params json.RawMessage) (any, *verbError) {
 	var p struct {
 		Session string `json:"session"`
 		Order   []int  `json:"order"`
@@ -1353,20 +1461,32 @@ func (d *Daemon) verbSetWorkspaceOrder(_ *connState, params json.RawMessage) (an
 	if len(p.Order) == 0 {
 		return nil, invalidParam("order", "order is required and is the workspace numbers in the order to show them, e.g. [3,1,2]")
 	}
-	sess, verr := d.resolveVerbSession(p.Session)
+	sess, verr := d.resolveVerbSession(cs, p.Session)
 	if verr != nil {
 		return nil, verr
 	}
-	if err := sess.SetDaemonWorkspaceOrder(p.Order); err != nil {
+	moved, err := sess.RenumberWorkspaces(p.Order)
+	if err != nil {
 		return nil, invalidParam("order", err.Error())
 	}
-	// The stored order is what was kept after sanitising, which is what the
-	// caller has to see: a drag that named a workspace this session no longer
-	// has should read back without it rather than as accepted verbatim.
-	return map[string]any{"type": "workspace_order_set", "workspace_order": sess.GetState().WorkspaceOrder}, nil
+	// workspace_order stays in the answer for a caller written against the
+	// display order, and is always null: the numbering is the order.
+	// renumbered says where each workspace went, by its old number.
+	renumbered := make(map[string]int, len(moved))
+	for from, to := range moved {
+		renumbered[strconv.Itoa(from)] = to
+	}
+	return map[string]any{"type": "workspace_order_set", "workspace_order": nil, "renumbered": renumbered}, nil
 }
 
 func (d *Daemon) verbSetAgentState(cs *connState, params json.RawMessage) (any, *verbError) {
+	return d.setAgentState(cs, params, false)
+}
+
+// setAgentState is set-agent-state. ownPane says the caller is the pane the
+// report is about, for a caller with no connection to place: the herdr
+// socket's report from a pane for itself.
+func (d *Daemon) setAgentState(cs *connState, params json.RawMessage, ownPane bool) (any, *verbError) {
 	// The herdr socket calls this handler directly, past admitVerb.
 	if !d.agentsEnabled() {
 		return nil, agentsDisabledError()
@@ -1381,11 +1501,12 @@ func (d *Daemon) verbSetAgentState(cs *connState, params json.RawMessage) (any, 
 		// The fields below are what a hook reporter adds. Every one is
 		// optional, and a caller that sends none of them is handled exactly as
 		// before they existed.
-		Kind           string `json:"kind"`
-		AgentSessionID string `json:"agent_session_id"`
-		TranscriptPath string `json:"transcript_path"`
-		IfState        string `json:"if_state"`
-		HarnessPID     int    `json:"harness_pid"`
+		Kind           string  `json:"kind"`
+		AgentSessionID string  `json:"agent_session_id"`
+		TranscriptPath string  `json:"transcript_path"`
+		TranscriptLeaf *string `json:"transcript_leaf"`
+		IfState        string  `json:"if_state"`
+		HarnessPID     int     `json:"harness_pid"`
 		// SessionStart marks a conversation's SessionStart. See
 		// AgentReport.SessionStart.
 		SessionStart bool `json:"session_start"`
@@ -1402,6 +1523,9 @@ func (d *Daemon) verbSetAgentState(cs *connState, params json.RawMessage) (any, 
 		return nil, verr
 	}
 	if verr := checkActivityReport(p.Activity, activityEvents); verr != nil {
+		return nil, verr
+	}
+	if verr := d.checkTranscriptSelection(p.Harness, p.TranscriptPath, p.TranscriptLeaf); verr != nil {
 		return nil, verr
 	}
 	if p.State == "" {
@@ -1460,6 +1584,17 @@ func (d *Daemon) verbSetAgentState(cs *connState, params json.RawMessage) (any, 
 	if verr != nil {
 		return nil, verr
 	}
+	// An accepted new identity must never retain the previous conversation's
+	// history if its replacement is absent or refused by the path allowlist.
+	// A tree of entries is joined only by the file the hook names, so nothing
+	// else would replace it.
+	var treeWindow, previousSession string
+	if p.AgentSessionID != "" && d.transcriptIsTree(p.Harness) {
+		st := sess.GetState()
+		if idx, err := findWindowStateIndex(st.Windows, target); err == nil {
+			treeWindow, previousSession = st.Windows[idx].ID, st.Windows[idx].AgentSessionID
+		}
+	}
 
 	report := AgentReport{
 		State:      state,
@@ -1478,6 +1613,9 @@ func (d *Daemon) verbSetAgentState(cs *connState, params json.RawMessage) (any, 
 		SessionStart: p.SessionStart,
 		SharedServer: d.agentMatcher.registry.SharedServer(p.Harness),
 	}
+	report.foreignPane = d.harnessOutsidePane(cs, sess, target, p.HarnessPID)
+	report.harnessGone = p.AgentSessionID != "" && d.harnessLeftPane(cs, sess, target, p.HarnessPID)
+	report.fromPane = ownPane || d.reportFromOwnPane(cs, sess, target)
 	// The identity guard is read before the report applies, because it is
 	// about the pane as the report found it, and applyAgentReport checks
 	// if_state first and so may never reach it.
@@ -1507,8 +1645,7 @@ func (d *Daemon) verbSetAgentState(cs *connState, params json.RawMessage) (any, 
 	// report the identity guard refuses is a nested run's, and its activity
 	// is not the pane's.
 	recorded := false
-	if p.Activity != nil && windowID != "" && guard == "" &&
-		reason != agentRefusedForeignSession && reason != agentRefusedForeignHarness {
+	if p.Activity != nil && windowID != "" && guard == "" && !refusedAsForeign(reason) {
 		d.recordAgentActivity(sess, windowID, p.Activity, effective)
 		recorded = true
 	} else if created {
@@ -1517,17 +1654,16 @@ func (d *Daemon) verbSetAgentState(cs *connState, params json.RawMessage) (any, 
 		// pane's agent.
 		d.activity.forgetIfEmpty(sess.ID, windowID)
 	}
-	if p.AgentCwd != "" && p.AgentSessionID != "" &&
-		reason != agentRefusedForeignSession && reason != agentRefusedForeignHarness {
+	if p.AgentCwd != "" && p.AgentSessionID != "" && !refusedAsForeign(reason) {
 		d.noteReportedAgentDir(sess, target, p.AgentSessionID, p.AgentCwd)
 	}
-	if reason == agentRefusedForeignSession || reason == agentRefusedForeignHarness {
+	if refusedAsForeign(reason) {
 		debugLog("[DEBUG] set-agent-state: %s refused session %q of %s", reason, p.AgentSessionID, p.Harness)
 	}
 	transcriptRefused := ""
 	switch {
 	case applied && p.TranscriptPath != "":
-		transcriptRefused = d.joinReportedTranscript(cs, sess, target, p.Harness, p.TranscriptPath, "")
+		transcriptRefused = d.joinReportedTranscript(cs, sess, target, p.Harness, p.TranscriptPath, "", p.TranscriptLeaf)
 	case applied && cs != nil && p.TranscriptPath == "" && p.AgentSessionID != "":
 		// A harness whose hook names its session and not its file (Amp):
 		// the manifest's session_file names the file, and it is held to the
@@ -1542,10 +1678,14 @@ func (d *Daemon) verbSetAgentState(cs *connState, params json.RawMessage) (any, 
 		// as a file the daemon can watch.
 		sid := strings.TrimSpace(p.AgentSessionID)
 		if path := d.storeTranscriptPath(p.Harness); path != "" {
-			transcriptRefused = d.joinReportedTranscript(cs, sess, target, p.Harness, path, sid)
+			transcriptRefused = d.joinReportedTranscript(cs, sess, target, p.Harness, path, sid, nil)
 		} else if path := d.sessionTranscriptPath(p.Harness, sid); path != "" {
-			transcriptRefused = d.joinReportedTranscript(cs, sess, target, p.Harness, path, "")
+			transcriptRefused = d.joinReportedTranscript(cs, sess, target, p.Harness, path, "", nil)
 		}
+	}
+	if applied && treeWindow != "" && previousSession != p.AgentSessionID && (p.TranscriptPath == "" || transcriptRefused != "") {
+		sess.DropAgentTranscript(treeWindow)
+		sess.emit(SessionEvent{Type: EventTranscript, Window: treeWindow})
 	}
 	// state is the effective state, so a report a higher-ranked source outranked
 	// reports what the pane actually shows rather than what was asked for.
@@ -1584,7 +1724,7 @@ func (d *Daemon) reportTarget(cs *connState, sessionName, window string) (*Sessi
 			}
 		}
 	}
-	sess, verr := d.resolveVerbSession(sessionName)
+	sess, verr := d.resolveVerbSession(cs, sessionName)
 	if verr != nil {
 		return nil, "", verr
 	}
@@ -1600,6 +1740,35 @@ func (d *Daemon) reportTarget(cs *connState, sessionName, window string) (*Sessi
 		target = id
 	}
 	return sess, target, nil
+}
+
+// reportFromOwnPane says the caller on cs runs in the pane target names: a
+// process the daemon placed there, or a call run as a pane on another
+// machine. A report from it is the pane's word about itself.
+func (d *Daemon) reportFromOwnPane(cs *connState, sess *Session, target string) bool {
+	if cs == nil {
+		return false
+	}
+	w, ok := findWindowStateByTarget(sess, target)
+	if !ok {
+		return false
+	}
+	if cs.hostedWindow != "" {
+		return cs.hostedWindow == w.ID
+	}
+	pa := d.paneAuthority(cs)
+	return pa != nil && pa.plugin == "" && !pa.hosted && pa.window == w.ID
+}
+
+// findWindowStateByTarget resolves target (an id, a short id or a name) in
+// sess.
+func findWindowStateByTarget(sess *Session, target string) (WindowState, bool) {
+	wins := sess.GetState().Windows
+	idx, err := findWindowStateIndex(wins, target)
+	if err != nil {
+		return WindowState{}, false
+	}
+	return wins[idx], true
 }
 
 // Rates of report-agent-activity. Each event it records may change what the
@@ -1646,6 +1815,7 @@ func (d *Daemon) verbReportAgentActivity(cs *connState, params json.RawMessage) 
 		SessionID:    p.AgentSessionID,
 		HarnessPID:   p.HarnessPID,
 		SharedServer: d.agentMatcher.registry.SharedServer(p.Harness),
+		foreignPane:  d.harnessOutsidePane(cs, sess, target, p.HarnessPID),
 	})
 	if err != nil {
 		return nil, mapResolveErr(err, sess)
@@ -1681,16 +1851,21 @@ func (d *Daemon) verbSetAgentSession(cs *connState, params json.RawMessage) (any
 		return nil, agentsDisabledError()
 	}
 	var p struct {
-		Session        string `json:"session"`
-		Window         string `json:"window"`
-		Harness        string `json:"harness"`
-		AgentSessionID string `json:"agent_session_id"`
-		HarnessPID     int    `json:"harness_pid"`
+		Session        string  `json:"session"`
+		Window         string  `json:"window"`
+		Harness        string  `json:"harness"`
+		AgentSessionID string  `json:"agent_session_id"`
+		HarnessPID     int     `json:"harness_pid"`
+		TranscriptPath string  `json:"transcript_path"`
+		TranscriptLeaf *string `json:"transcript_leaf"`
 	}
 	if verr := decodeParams(params, &p); verr != nil {
 		return nil, verr
 	}
 	harnessID := strings.TrimSpace(p.Harness)
+	if verr := d.checkTranscriptSelection(harnessID, p.TranscriptPath, p.TranscriptLeaf); verr != nil {
+		return nil, verr
+	}
 	if harnessID == "" {
 		return nil, invalidParam("harness", "harness is required: the id of the harness the conversation belongs to, e.g. qwen")
 	}
@@ -1701,7 +1876,7 @@ func (d *Daemon) verbSetAgentSession(cs *connState, params json.RawMessage) (any
 	if len(sid) > maxAgentSessionIDLen {
 		return nil, invalidParam("agent_session_id", fmt.Sprintf("agent_session_id is %d bytes; the limit is %d", len(sid), maxAgentSessionIDLen))
 	}
-	sess, verr := d.resolveVerbSession(p.Session)
+	sess, verr := d.resolveVerbSession(cs, p.Session)
 	if verr != nil {
 		return nil, verr
 	}
@@ -1713,12 +1888,24 @@ func (d *Daemon) verbSetAgentSession(cs *connState, params json.RawMessage) (any
 		}
 		target = id
 	}
+	// An accepted new identity must never retain the previous conversation's
+	// history, and this verb names no file to replace it with.
+	var treeWindow, previousSession string
+	if d.transcriptIsTree(harnessID) {
+		st := sess.GetState()
+		if idx, err := findWindowStateIndex(st.Windows, target); err == nil {
+			treeWindow, previousSession = st.Windows[idx].ID, st.Windows[idx].AgentSessionID
+		}
+	}
 	stored, applied, reason, err := sess.applyAgentSession(target, AgentSessionReport{
-		Harness:    harnessID,
-		SessionID:  sid,
-		HarnessPID: p.HarnessPID,
+		Harness:     harnessID,
+		SessionID:   sid,
+		HarnessPID:  p.HarnessPID,
+		foreignPane: d.harnessOutsidePane(cs, sess, target, p.HarnessPID),
 
 		HarnessIsCaller: callerRunsHarness(cs, p.HarnessPID),
+		TranscriptOnly:  p.TranscriptPath != "" || p.TranscriptLeaf != nil,
+		harnessGone:     d.harnessLeftPane(cs, sess, target, p.HarnessPID),
 	})
 	if err != nil {
 		return nil, mapResolveErr(err, sess)
@@ -1731,7 +1918,40 @@ func (d *Daemon) verbSetAgentSession(cs *connState, params json.RawMessage) (any
 	if reason != "" {
 		out["reason"] = reason
 	}
+	transcriptRefused := ""
+	if applied && p.TranscriptPath != "" {
+		transcriptRefused = d.joinReportedTranscript(cs, sess, target, harnessID, p.TranscriptPath, "", p.TranscriptLeaf)
+		if transcriptRefused != "" {
+			out["transcript_refused"] = transcriptRefused
+		}
+	}
+	if applied && treeWindow != "" && previousSession != stored && (p.TranscriptPath == "" || transcriptRefused != "") {
+		sess.DropAgentTranscript(treeWindow)
+		sess.emit(SessionEvent{Type: EventTranscript, Window: treeWindow})
+	}
 	return out, nil
+}
+
+// checkTranscriptSelection bounds metadata before a report can change state.
+// Paths are checked independently by joinReportedTranscript, including the
+// caller's own-pane authority. A leaf never grants access to a different file,
+// and only a tree of entries has one.
+func (d *Daemon) checkTranscriptSelection(harnessID, path string, leaf *string) *verbError {
+	if leaf == nil {
+		return nil
+	}
+	if path == "" || !d.transcriptIsTree(strings.TrimSpace(harnessID)) {
+		return invalidParam("transcript_leaf", "a selected leaf needs a harness whose transcript is a tree, and its transcript_path")
+	}
+	if len(*leaf) > 128 {
+		return invalidParam("transcript_leaf", "the selected entry id exceeds 128 bytes")
+	}
+	for _, c := range *leaf {
+		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '-' || c == '_') {
+			return invalidParam("transcript_leaf", "the selected entry id must contain only letters, digits, '-' or '_'")
+		}
+	}
+	return nil
 }
 
 // maxAgentSessionIDLen bounds a reported conversation id. Every harness uses a
@@ -1743,6 +1963,17 @@ const maxAgentSessionIDLen = 256
 // the manifest rule kinds, so a hook and a screen rule describe a block in the
 // same words.
 var agentKindNames = []string{harness.PromptKindApproval, harness.PromptKindQuestion, harness.PromptKindAuth}
+
+// transcriptIsTree says whether the harness's manifest names a reader for a
+// tree of entries, such as Pi's, rather than a log read from an offset.
+func (d *Daemon) transcriptIsTree(harnessID string) bool {
+	reg := d.agentMatcher.registry
+	if harnessID == "" || reg == nil {
+		return false
+	}
+	tr := reg.TranscriptFor(harnessID)
+	return tr != nil && transcriptview.IsTree(tr.Reader)
+}
 
 // joinReportedTranscript binds a window to the transcript file its harness
 // named in a hook. This is the exact join the transcript source was built for:
@@ -1756,7 +1987,7 @@ var agentKindNames = []string{harness.PromptKindApproval, harness.PromptKindQues
 // for its own pane, and the file must be a regular file under the harness's
 // transcript folder. A refusal is returned for the reply, so the hook's
 // --explain shows it, and logged without the path, which is the person's.
-func (d *Daemon) joinReportedTranscript(cs *connState, sess *Session, target, harnessID, path, session string) string {
+func (d *Daemon) joinReportedTranscript(cs *connState, sess *Session, target, harnessID, path, session string, leaf *string) string {
 	state := sess.GetState()
 	idx, err := findWindowStateIndex(state.Windows, target)
 	if err != nil {
@@ -1793,7 +2024,7 @@ func (d *Daemon) joinReportedTranscript(cs *connState, sess *Session, target, ha
 		sess.JoinAgentSession(w.ID, harnessID, tr.Reader, resolved, session)
 		return ""
 	}
-	_ = sess.JoinAgentTranscriptAs(w.ID, harnessID, tr.Reader, resolved, true)
+	_ = sess.joinAgentTranscriptLeaf(w.ID, harnessID, tr.Reader, resolved, true, leaf)
 	return ""
 }
 
@@ -1905,12 +2136,12 @@ func resolveExisting(path string) string {
 	}
 }
 
-func (d *Daemon) verbGetAgentState(_ *connState, params json.RawMessage) (any, *verbError) {
+func (d *Daemon) verbGetAgentState(cs *connState, params json.RawMessage) (any, *verbError) {
 	var p commonParams
 	if verr := decodeParams(params, &p); verr != nil {
 		return nil, verr
 	}
-	sess, verr := d.resolveVerbSession(p.Session)
+	sess, verr := d.resolveVerbSession(cs, p.Session)
 	if verr != nil {
 		return nil, verr
 	}
@@ -1993,12 +2224,12 @@ func (d *Daemon) verbGetAgentState(_ *connState, params json.RawMessage) (any, *
 // was not counted. A person who reports a false positive should be able to read
 // the answer once and see either the rule that fired or the word they took for
 // one.
-func (d *Daemon) verbExplainAgentDetect(_ *connState, params json.RawMessage) (any, *verbError) {
+func (d *Daemon) verbExplainAgentDetect(cs *connState, params json.RawMessage) (any, *verbError) {
 	var p commonParams
 	if verr := decodeParams(params, &p); verr != nil {
 		return nil, verr
 	}
-	sess, verr := d.resolveVerbSession(p.Session)
+	sess, verr := d.resolveVerbSession(cs, p.Session)
 	if verr != nil {
 		return nil, verr
 	}
@@ -2158,7 +2389,7 @@ func describeRule(det detection) string {
 // looks, and a rule that fails says nothing about which of its strings was the
 // reason. This answers both, so adding a harness is an edit and a re-run rather
 // than an experiment.
-func (d *Daemon) verbExplainAgentScreen(_ *connState, params json.RawMessage) (any, *verbError) {
+func (d *Daemon) verbExplainAgentScreen(cs *connState, params json.RawMessage) (any, *verbError) {
 	var p struct {
 		commonParams
 		Harness string `json:"harness"`
@@ -2167,7 +2398,7 @@ func (d *Daemon) verbExplainAgentScreen(_ *connState, params json.RawMessage) (a
 	if verr := decodeParams(params, &p); verr != nil {
 		return nil, verr
 	}
-	sess, verr := d.resolveVerbSession(p.Session)
+	sess, verr := d.resolveVerbSession(cs, p.Session)
 	if verr != nil {
 		return nil, verr
 	}
@@ -2282,6 +2513,17 @@ func (d *Daemon) verbExplainAgentScreen(_ *connState, params json.RawMessage) (a
 	out["title_matched"] = titleRule >= 0
 	out["title_rule_state"] = titleState
 	return out, nil
+}
+
+// captureLineCount is how many lines lines can choose from in content: the
+// rows up to the last one that is not blank, as sliceCaptureLines counts them.
+func captureLineCount(content string) int {
+	split := strings.Split(strings.TrimSuffix(content, "\n"), "\n")
+	n := len(split)
+	for n > 0 && strings.TrimSpace(split[n-1]) == "" {
+		n--
+	}
+	return n
 }
 
 // sliceCaptureLines applies the optional region/lines selection to captured

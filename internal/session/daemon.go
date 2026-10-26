@@ -22,6 +22,7 @@ import (
 	"github.com/Gaurav-Gosain/tuios/internal/hooks"
 	"github.com/Gaurav-Gosain/tuios/internal/memtrim"
 	"github.com/Gaurav-Gosain/tuios/internal/pastebuf"
+	"github.com/Gaurav-Gosain/tuios/internal/procinfo"
 	"github.com/google/uuid"
 )
 
@@ -31,6 +32,8 @@ type Daemon struct {
 	manager *Manager
 	// tml holds the open TML surfaces. See tml_surface.go.
 	tml tmlHost
+	// artifacts is what each pane has shown the person. See artifacts.go.
+	artifacts artifactLog
 	// instance names this daemon run, fresh on every start. hello reports
 	// it, and a hub records it for each host, so a client attached to a
 	// session on another machine can tell which of that machine's hosts is
@@ -48,6 +51,19 @@ type Daemon struct {
 	// herdrListener is the socket harnesses that speak herdr's pane state
 	// protocol report to. See herdr_compat.go.
 	herdrListener net.Listener
+	// acceptWG counts the accept loops, and acceptPaused tells them to
+	// return on the error a deadline gives Accept. See pauseAccepting.
+	acceptWG     sync.WaitGroup
+	acceptPaused atomic.Bool
+	// handoffArgs builds the command line a handoff execs the next image
+	// with, given the manifest's descriptor. Nil for a daemon inside another
+	// program, which cannot hand off. handoffMu is held by the handoff in
+	// progress. See handoff.go.
+	handoffArgs func(manifestFD int) []string
+	handoffMu   sync.Mutex
+	// adopting is set while a new daemon image rebuilds the sessions its
+	// predecessor handed over. See handoff_adopt.go.
+	adopting atomic.Bool
 	// herdrSeqs is the highest seq each pane's herdr reporter has sent.
 	herdrSeqs herdrSeqs
 	// herdrWorkspaceMeta holds the tokens tools report on a session with
@@ -68,6 +84,10 @@ type Daemon struct {
 	// Connection tracking
 	clients   map[string]*connState
 	clientsMu sync.RWMutex
+	// hostFocusMu serializes host focus reports, so two clients that change
+	// focus at once cannot both see the session's focus flip. See
+	// handleClientFocus.
+	hostFocusMu sync.Mutex
 
 	// The read budgets large frames and large verb request lines are
 	// charged to, and the connections served now on the main socket and the
@@ -158,6 +178,11 @@ type Daemon struct {
 	// pluginsWaiting is true while config.toml enables a plugin the person
 	// has not applied.
 	pluginsWaiting atomic.Bool
+	// pluginAsks are the native plugins that wait for the person's
+	// approval, as the attached clients were last told. See
+	// plugin_approval.go.
+	pluginAsksMu sync.Mutex
+	pluginAsks   []PluginApprovalAsk
 	// notify sends the Inbox's push notifications ([notify]). See
 	// daemon_notify.go.
 	notify *pushNotifier
@@ -180,6 +205,9 @@ type Daemon struct {
 	// hosted_pane.go.
 	hostedPanes   map[string]*hostedPane
 	hostedPanesMu sync.Mutex
+	// hostedPanesShut refuses a new hosted pane while a live upgrade runs,
+	// whose exec would close its terminal. See shutHostedPanes.
+	hostedPanesShut bool
 
 	// outbox holds mail for machines whose link is down, and delivers it when
 	// the link comes back. See host_outbox.go.
@@ -278,6 +306,13 @@ type Daemon struct {
 	// queue holds the messages waiting to be typed to an agent when it comes
 	// to rest. Its zero value is ready. See agent_queue.go.
 	queue agentQueues
+	// mailWake types the one-line wake prompt into an agent at rest that has
+	// mail. Its zero value is ready, and off until SetMailWake. See
+	// mail_wake.go.
+	mailWake mailWaker
+	// askTurns keeps one ask-agent typing at a pane at a time. See
+	// ask_turns.go.
+	askTurns askTurns
 
 	// reviewNotes holds the review notes left on panes' changes. Its zero
 	// value is ready; Start loads what the last daemon saved. See
@@ -536,6 +571,9 @@ type connState struct {
 	// tmlSurfaces says the client's hello set TMLSurfaces: it draws TML
 	// surfaces and reads MsgTMLSurface. Guarded by mu. See tml_surface.go.
 	tmlSurfaces bool
+	// pluginAsks says the client's hello set PluginApprovals: it reads
+	// MsgPluginApprovals. Guarded by mu. See plugin_approval.go.
+	pluginAsks bool
 	// tmlOut holds the TML pushes not yet written to this client: one per
 	// surface, the newest. See tml_surface.go.
 	tmlOut tmlOutbox
@@ -653,6 +691,11 @@ type connState struct {
 	// start time (peerChanged).
 	peerStart   uint64
 	peerStartOK bool
+	// peerEnv is the peer's environment, read once at accept (pinPeer)
+	// for paneOrigin and the plugin token. peerEnvOK is false when it
+	// could not be read.
+	peerEnv   procinfo.Env
+	peerEnvOK bool
 	// paneOnly marks a call a pane on another machine sent through its report
 	// channel (hosted_calls.go). It is a pane by construction, whatever the
 	// pid says, so it can never act as the person.
@@ -669,10 +712,18 @@ type connState struct {
 	paneBound  atomic.Pointer[string]
 	panePlaced atomic.Pointer[string]
 	paneView   atomic.Pointer[paneAuth]
+	// pluginBound is the native plugin this connection presented the
+	// token of with pane-grants, nil when it presented none. See
+	// plugin_token.go.
+	pluginBound atomic.Pointer[string]
 	// hostedEnded, on a paneOnly call, is closed when the report channel the
 	// call came on ends. A wait-for stops on it, so a wait does not outlive
 	// the channel that would carry its answer. nil means it never ends.
 	hostedEnded <-chan struct{}
+	// hostedWindow, on a paneOnly call, is the window of the pane on another
+	// machine the call is run as (runHostedCall). Its reports are the pane's
+	// own.
+	hostedWindow string
 
 	// attached says the attach reply has been written to this connection, and
 	// it is what broadcastToSession requires before it will send anything.
@@ -752,6 +803,11 @@ type connState struct {
 type DaemonConfig struct {
 	Version    string
 	SocketPath string
+	// HandoffArgs is the command line, after the program, that runs this
+	// daemon again adopting the panes a handoff wrote to the descriptor
+	// manifestFD. The tuios binary sets it. A daemon run inside another
+	// program leaves it nil, and refuses to hand off. See handoff.go.
+	HandoffArgs func(manifestFD int) []string
 	// Foreground is true for `tuios daemon`, which owns a terminal. A foreground
 	// daemon echoes its log to stderr; a background one does not, because its
 	// stderr belongs to the process that spawned it.
@@ -874,6 +930,9 @@ type DaemonConfig struct {
 	// QueueMax is [agents.queue] max: how many messages one pane's delivery
 	// queue holds. Zero means the default. See agent_queue.go.
 	QueueMax int
+	// MailWakeOff is [agents.mail] wake = false: an agent at rest is not
+	// told about its mail by a typed prompt. See mail_wake.go.
+	MailWakeOff bool
 	// Checkpoints is [agents.checkpoints]: whether a pane's work tree is
 	// saved when its agent finishes a turn, and how many are kept. The zero
 	// value is on with the default keep. See checkpoints.go.
@@ -891,6 +950,7 @@ type DaemonConfig struct {
 
 // NewDaemon creates a new daemon instance.
 func NewDaemon(cfg *DaemonConfig) *Daemon {
+	registerHandoffTestVerbs()
 	ctx, cancel := context.WithCancel(context.Background())
 
 	d := &Daemon{
@@ -911,6 +971,7 @@ func NewDaemon(cfg *DaemonConfig) *Daemon {
 		respondFromShell:   cfg.RespondFromShell,
 		resumeAgents:       resolveResumeMode(cfg.ResumeAgents),
 		windowSize:         windowSizePolicy(cfg.WindowSize),
+		handoffArgs:        cfg.HandoffArgs,
 	}
 	d.singleClient.Store(cfg.SingleClient)
 	d.SetSSHAgent(cfg.SSHAgent)
@@ -926,6 +987,7 @@ func NewDaemon(cfg *DaemonConfig) *Daemon {
 	d.SetLinkPolicies(cfg.LinkPolicies)
 	d.manager.SetPanePermissions(cfg.Permissions)
 	d.SetQueueMax(cfg.QueueMax)
+	d.SetMailWake(!cfg.MailWakeOff)
 	d.SetCheckpoints(cfg.Checkpoints)
 	d.outbox = newHostOutbox(d)
 	// The socket path is read through a closure rather than copied, because the
@@ -1195,6 +1257,11 @@ func (d *Daemon) onSessionCreated(s *Session) {
 			d.attention.noteSessionEvent(name, ev)
 			return
 		}
+		// A task card the change let go, with its pane or its agent.
+		if ev.Type == eventTaskReleased {
+			d.publishReleased(s, []TaskRow{*ev.taskRow}, ev.taskReason)
+			return
+		}
 		// A pane with an activity ring gets its shell's commands and its
 		// state changes added to it. A pane without one costs a map lookup.
 		d.activity.noteSessionEvent(s, ev)
@@ -1217,6 +1284,10 @@ func (d *Daemon) onSessionCreated(s *Session) {
 			d.noteQueueEvent(name, ev)
 		}
 		d.reviewNotes.noteSessionEvent(ev)
+		if ev.Type == EventWindowClosed {
+			d.agents.forgetNotices(name, ev.Window)
+		}
+		d.noteMailWakeEvent(ev)
 		d.events.publish(streamEvent{
 			Type:       ev.Type,
 			Session:    name,
@@ -1235,7 +1306,11 @@ func (d *Daemon) onSessionCreated(s *Session) {
 			CommandSeq: ev.CommandSeq,
 		})
 	})
-	d.events.publish(streamEvent{Type: EventSessionCreated, Session: name})
+	// A session a new daemon image adopts was created long ago, as far as
+	// anyone watching the stream knows.
+	if !d.adopting.Load() {
+		d.events.publish(streamEvent{Type: EventSessionCreated, Session: name})
+	}
 }
 
 // onSessionRenamed moves what the daemon keeps by session name to the new
@@ -1374,22 +1449,7 @@ func (d *Daemon) Start() error {
 	// pane is told it may report there, and the screen rules carry those
 	// harnesses as before.
 	if l := listenHerdrSocket(HerdrSocketPath(socketPath)); l != nil {
-		d.herdrListener = l
-		d.manager.SetHerdrSocket(HerdrSocketPath(socketPath))
-		// herdr's command line, for a tool that runs "$HERDR_BIN_PATH"
-		// pane split and the rest, is this binary run as herdr: a link
-		// named herdr beside the daemon socket, as the tmux shim's is.
-		// Where the link cannot be made, the binary itself answers
-		// herdr's pane and notification commands. See internal/herdrcli.
-		if exe, err := d.agentProtoExecutable(); err == nil {
-			bin := exe
-			if link, err := herdrcli.InstallLink(HerdrLinkDir(socketPath), exe); err == nil {
-				bin = link
-			} else {
-				log.Printf("The herdr link could not be made: %v. Panes get the tuios binary as HERDR_BIN_PATH, which answers herdr's pane and notification commands only.", err)
-			}
-			d.manager.SetHerdrBin(bin)
-		}
+		d.serveHerdrOn(l, socketPath)
 	}
 
 	if err := d.writePidFile(); err != nil {
@@ -1445,6 +1505,36 @@ func (d *Daemon) Start() error {
 	d.applyResumeOffers(d.pendingResumes)
 	d.pendingResumes = nil
 
+	d.serve()
+	return nil
+}
+
+// serveHerdrOn takes l as the herdr protocol socket and points the panes at
+// it. A daemon image adopting its predecessor's socket runs it too, so the
+// link it makes is to the binary that now answers.
+func (d *Daemon) serveHerdrOn(l net.Listener, socketPath string) {
+	d.herdrListener = l
+	d.manager.SetHerdrSocket(HerdrSocketPath(socketPath))
+	// herdr's command line, for a tool that runs "$HERDR_BIN_PATH"
+	// pane split and the rest, is this binary run as herdr: a link
+	// named herdr beside the daemon socket, as the tmux shim's is.
+	// Where the link cannot be made, the binary itself answers
+	// herdr's pane and notification commands. See internal/herdrcli.
+	if exe, err := d.agentProtoExecutable(); err == nil {
+		bin := exe
+		if link, err := herdrcli.InstallLink(HerdrLinkDir(socketPath), exe); err == nil {
+			bin = link
+		} else {
+			log.Printf("The herdr link could not be made: %v. Panes get the tuios binary as HERDR_BIN_PATH, which answers herdr's pane and notification commands only.", err)
+		}
+		d.manager.SetHerdrBin(bin)
+	}
+}
+
+// serve starts everything that runs once the sessions are in place: the
+// links, the watchers, the plugins and the accept loops. Start runs it after a
+// restore, and adopt after taking over a predecessor's panes.
+func (d *Daemon) serve() {
 	// The links come up in the background. Start returns at once whatever the
 	// remote machines are doing, so a host that is powered off cannot delay the
 	// daemon's own socket by one millisecond.
@@ -1466,22 +1556,62 @@ func (d *Daemon) Start() error {
 	d.plugins.start()
 
 	go d.handleSignals()
-	go d.acceptLoop()
-	if d.linkListener != nil {
-		go d.acceptLinkLoop()
-	}
-	if d.linkHumanListener != nil {
-		go d.acceptLinkOn(d.linkHumanListener, true)
-	}
-	if d.herdrListener != nil {
-		go d.acceptHerdrLoop(d.herdrListener)
-	}
+	d.startAccepting()
 	go d.cleanupLoop()
 	go d.stallMonitor()
 	go d.agentMonitor()
 	go d.listingNotifier()
+}
 
-	return nil
+// startAccepting starts a loop on each listening socket. pauseAccepting
+// stops them without closing a socket.
+func (d *Daemon) startAccepting() {
+	d.acceptWG.Go(d.acceptLoop)
+	if d.linkListener != nil {
+		d.acceptWG.Go(d.acceptLinkLoop)
+	}
+	if d.linkHumanListener != nil {
+		d.acceptWG.Go(func() { d.acceptLinkOn(d.linkHumanListener, true) })
+	}
+	if d.herdrListener != nil {
+		d.acceptWG.Go(func() { d.acceptHerdrLoop(d.herdrListener) })
+	}
+}
+
+// pauseAccepting stops every accept loop and returns once they have
+// returned. The sockets stay open, so a caller dialling meanwhile waits in
+// the kernel's backlog and is accepted by whoever accepts next: this image
+// after resumeAccepting, or the image a handoff execs.
+func (d *Daemon) pauseAccepting() {
+	d.acceptPaused.Store(true)
+	for _, l := range d.listeners() {
+		if dl, ok := l.(interface{ SetDeadline(time.Time) error }); ok {
+			_ = dl.SetDeadline(time.Now())
+		}
+	}
+	d.acceptWG.Wait()
+}
+
+// resumeAccepting undoes pauseAccepting.
+func (d *Daemon) resumeAccepting() {
+	for _, l := range d.listeners() {
+		if dl, ok := l.(interface{ SetDeadline(time.Time) error }); ok {
+			_ = dl.SetDeadline(time.Time{})
+		}
+	}
+	d.acceptPaused.Store(false)
+	d.startAccepting()
+}
+
+// listeners is every socket the daemon accepts on.
+func (d *Daemon) listeners() []net.Listener {
+	var out []net.Listener
+	for _, l := range []net.Listener{d.listener, d.linkListener, d.linkHumanListener, d.herdrListener} {
+		if l != nil {
+			out = append(out, l)
+		}
+	}
+	return out
 }
 
 // Run starts the daemon and blocks until shutdown.
@@ -1716,6 +1846,9 @@ func (d *Daemon) acceptLoop() {
 	for {
 		conn, err := d.listener.Accept()
 		if err != nil {
+			if d.acceptPaused.Load() {
+				return
+			}
 			select {
 			case <-d.ctx.Done():
 				return
@@ -1747,6 +1880,9 @@ func (d *Daemon) acceptLinkOn(l net.Listener, human bool) {
 	for {
 		conn, err := l.Accept()
 		if err != nil {
+			if d.acceptPaused.Load() {
+				return
+			}
 			select {
 			case <-d.ctx.Done():
 				return
@@ -1922,6 +2058,7 @@ func (d *Daemon) handleConnectionOn(conn net.Conn, viaLink, linkHuman bool) {
 		cs.mu.Lock()
 		sessionID := cs.sessionID
 		sessionName := cs.sessionName
+		input := cs.lastActivity
 		subs := make([]string, 0, len(cs.ptySubscriptions))
 		for ptyID := range cs.ptySubscriptions {
 			subs = append(subs, ptyID)
@@ -1964,7 +2101,7 @@ func (d *Daemon) handleConnectionOn(conn net.Conn, viaLink, linkHuman bool) {
 		// the client is out of d.clients, so the size is taken over the ones that
 		// remain; a clean detach cleared sessionID above and does not come here.
 		if sessionID != "" {
-			d.notifyClientLeft(sessionID, clientID)
+			d.notifyClientLeft(sessionID, clientID, input)
 		}
 
 		_ = conn.Close()

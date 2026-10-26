@@ -2,7 +2,6 @@ package session
 
 import (
 	"fmt"
-	"github.com/google/uuid"
 	"os"
 	"sort"
 	"sync"
@@ -11,6 +10,7 @@ import (
 
 	"github.com/Gaurav-Gosain/tuios/internal/config"
 	"github.com/Gaurav-Gosain/tuios/internal/guestenv"
+	"github.com/google/uuid"
 )
 
 // Manager manages all persistent sessions for a user.
@@ -73,6 +73,9 @@ type Manager struct {
 	// [agents.permissions] default. It is stamped into every session made
 	// here. See pane_grants.go.
 	grants *paneGrantTable
+	// paneLife is held for reading while a pane starts or closes, and for
+	// writing by a handoff. See SessionConfig.paneLife.
+	paneLife sync.RWMutex
 
 	// Lifecycle hooks (set by the daemon). onCreate fires after a session is
 	// registered; onDelete fires after it is removed but before it is stopped.
@@ -203,9 +206,9 @@ func (m *Manager) SetHerdrBin(path string) {
 // naming tuios's own socket, HERDR_PANE_ID, HERDR_TAB_ID and
 // HERDR_WORKSPACE_ID naming the pane, its workspace and its session in
 // herdr's form (herdr_ids.go), and HERDR_BIN_PATH naming the herdr link, for
-// a tool that runs herdr's CLI rather than the socket. workspace is the tuios
-// workspace the pane starts on, which is herdr's tab; 0 gives no
-// HERDR_TAB_ID. A pane gets it when the daemon listens on the socket and
+// a tool that runs herdr's CLI rather than the socket. workspace is the tab
+// key of the tuios workspace the pane starts on, which is herdr's tab (see
+// herdrTabFor); 0 gives no HERDR_TAB_ID. A pane gets it when the daemon listens on the socket and
 // [agents] herdr_protocol is not off: every pane by default, as in herdr, or
 // with "agents" only a pane that starts a harness known to report this way.
 // See herdr_compat.go.
@@ -323,6 +326,7 @@ func (m *Manager) CreateSession(name string, cfg *SessionConfig, width, height i
 	if cfg.grants == nil {
 		cfg.grants = m.grants
 	}
+	cfg.paneLife = &m.paneLife
 
 	// A restored id is kept only when it is a well-formed id no live session
 	// holds. Anything else gets a new one, as before ids were saved.
@@ -642,16 +646,21 @@ func newerPick(used, bestUsed, active, bestActive time.Time, s, best *Session) b
 }
 
 // GetDefaultSession returns the session the person used last, creating one if
-// none exist. It used to return the first session a range over the map gave,
-// which Go randomises, so a bare attach landed on any session at all.
-func (m *Manager) GetDefaultSession(cfg *SessionConfig, width, height int) (*Session, error) {
+// none exist. The bool reports whether it created the session. It used to
+// return the first session a range over the map gave, which Go randomises,
+// so a bare attach landed on any session at all.
+func (m *Manager) GetDefaultSession(cfg *SessionConfig, width, height int) (*Session, bool, error) {
 	if session := m.LastUsedSession(); session != nil {
-		return session, nil
+		return session, false, nil
 	}
 
 	// No sessions, create default with generated name
 	name := m.GenerateSessionName()
-	return m.CreateSession(name, cfg, width, height)
+	session, err := m.CreateSession(name, cfg, width, height)
+	if err != nil {
+		return nil, false, err
+	}
+	return session, true, nil
 }
 
 // Shutdown stops all sessions and cleans up.

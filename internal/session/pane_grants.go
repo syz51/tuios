@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 
 	"github.com/Gaurav-Gosain/tuios/internal/config"
+	"github.com/Gaurav-Gosain/tuios/internal/harness"
 	"github.com/Gaurav-Gosain/tuios/internal/procinfo"
 	"github.com/Gaurav-Gosain/tuios/internal/tape"
 )
@@ -40,9 +41,13 @@ import (
 //   - files: copy files with tuios cp. A copy's ends on this machine are in
 //     the pane's own folder, and its ends on a host are under that host's
 //     home. The pane sees and controls only the copies it started.
+//   - task: add, claim, finish, stage, block and release the task cards of
+//     its own session (task.go). A pane claims only for itself and acts only
+//     on the card it holds; remove-task needs admin.
 //   - admin: everything else a pane could do before grants existed, which is
 //     every verb on every session, the listings across sessions, and the
-//     binary protocol (attach, input). It implies read, write, fan and files.
+//     binary protocol (attach, input). It implies read, write, fan, files and
+//     task.
 //
 // Every pane may also report its own state, meta and conversation id, ask
 // the person as itself, hold its own approval prompt, and call the verbs that
@@ -94,6 +99,9 @@ const (
 	// own folder or a host's home, and the transfer verbs on the copies the
 	// pane started. See transferGrantCheck in transfer_grants.go.
 	GrantFiles
+	// GrantTask writes the task cards of the pane's own session. See
+	// task.go.
+	GrantTask
 )
 
 // grantNone is the name a caller uses for the empty set.
@@ -105,6 +113,7 @@ var grantByName = map[string]Grants{
 	config.PaneGrantFan:     GrantFan,
 	config.PaneGrantRespond: GrantRespond,
 	config.PaneGrantFiles:   GrantFiles,
+	config.PaneGrantTask:    GrantTask,
 	config.PaneGrantAdmin:   GrantAdmin,
 }
 
@@ -140,7 +149,7 @@ func parseGrantsParam(names []string) (Grants, *verbError) {
 // expand adds what admin implies.
 func (g Grants) expand() Grants {
 	if g&GrantAdmin != 0 {
-		g |= GrantRead | GrantWrite | GrantFan | GrantFiles
+		g |= GrantRead | GrantWrite | GrantFan | GrantFiles | GrantTask
 	}
 	return g
 }
@@ -649,7 +658,7 @@ func grantForbidden(verb string, pa *paneAuth, why string) *verbError {
 	if pa.plugin != "" {
 		return hintedVerbError(ErrVerbForbidden, verb+" is refused for plugin "+pa.plugin+": "+why, &VerbHint{
 			Detail: "The plugin holds " + pa.grants.String() + ". Nothing was done. A plugin asks for grants in [permissions] of tuios-plugin.toml. " +
-				"It holds them when the person approves them at tuios plugins install, and none when it was not installed.",
+				"It holds them only after the person allows the plugin on this machine, in the approval dialog or with tuios plugins approve.",
 		})
 	}
 	if pa.linkTable != "" {
@@ -659,6 +668,10 @@ func grantForbidden(verb string, pa *paneAuth, why string) *verbError {
 				"To let such calls answer prompts, add \"respond\" to allow in " + pa.linkTable + " in the config on this machine.",
 		})
 	}
+	target := "-w " + shortWindowID(pa.window)
+	if pa.session != "" {
+		target = "-s " + cliWord(pa.session) + " " + target
+	}
 	source := "the default of [agents.permissions]"
 	if pa.explicit {
 		source = "the grants it was given"
@@ -667,7 +680,9 @@ func grantForbidden(verb string, pa *paneAuth, why string) *verbError {
 		Verb:    "pane-grants",
 		Command: "tuios pane-grants",
 		Detail: "Pane " + shortWindowID(pa.window) + " holds " + pa.grants.String() + ", " + source + ". Nothing was done. " +
-			"The person can give this pane more with tuios set-pane-grants -w " + shortWindowID(pa.window) + " --grants <names>, " +
+			"What a pane may do is the person's decision. Do not try another verb or another process to do the same thing. " +
+			"Tell the person what you needed and why. " +
+			"The person can give this pane more with tuios set-pane-grants " + target + " --grants <names>, " +
 			"or every pane started with none with mode and grants under [agents.permissions] in config.toml.",
 	})
 }
@@ -680,13 +695,26 @@ func (d *Daemon) checkGrants(cs *connState, verb string, params json.RawMessage)
 	if cs != nil && cs.viaLink && typingVerbs[verb] {
 		return d.holdLinkTyping(cs, verb, params)
 	}
+	if cs != nil && cs.viaLink && grantKind(verb) == scopeSelf {
+		// A caller over a link is in no pane here, so a report it makes is
+		// about another pane, and the state it sets is what the typing rule
+		// reads (holdOwnRecord). The person on the hub passes, as does a
+		// link the person here let answer prompts.
+		if pa := d.linkTypingAuthority(cs); pa != nil && !pa.grants.Has(GrantRespond) {
+			LogBasic("Link %s refused %s: it reports for a pane on this machine", cs.clientID, verb)
+			return nil, grantForbidden(verb, pa, "it reports for a pane on this machine, and only that pane, the person, or a caller allowed to answer prompts reports for it")
+		}
+		return params, nil
+	}
 	if cs == nil || cs.viaLink || cs.paneOnly {
 		return params, nil
 	}
 	// Under open with no pane given grants every pane holds admin, and only a
 	// typing verb has anything to check: whether it answers another pane's
 	// prompt (holdTypingTarget).
-	if cs.paneBound.Load() == nil && !d.manager.grants.mayMatter() && !d.nativePluginsRun() && !typingVerbs[verb] {
+	// A report about a pane is checked too: a pane may report only for itself
+	// (holdOwnRecord).
+	if cs.paneBound.Load() == nil && cs.pluginBound.Load() == nil && !d.manager.grants.mayMatter() && !d.nativePluginsRun() && !typingVerbs[verb] && grantKind(verb) != scopeSelf {
 		return params, nil
 	}
 	pa := d.paneAuthority(cs)
@@ -700,11 +728,14 @@ func (d *Daemon) checkGrants(cs *connState, verb string, params json.RawMessage)
 		return grantForbidden(verb, pa, why)
 	}
 	if pa.plugin != "" {
-		return d.checkPluginGrants(verb, pa, params, deny)
+		return d.checkPluginGrants(cs, verb, pa, params, deny)
 	}
 	if pa.grants.Has(GrantAdmin) {
 		if typingVerbs[verb] {
-			return d.holdTypingTarget(verb, pa, params, deny)
+			return d.holdTypingTarget(cs, verb, pa, params, deny)
+		}
+		if grantKind(verb) == scopeSelf {
+			return d.holdOwnRecord(verb, pa, params, deny)
 		}
 		return params, nil
 	}
@@ -778,6 +809,16 @@ func (d *Daemon) checkGrants(cs *connState, verb string, params json.RawMessage)
 			}
 			return "session " + echoName(target) + " is not the pane's own session or in its fan group, and starting agents there needs the admin grant"
 		}
+	case scopeTask:
+		if !pa.grants.Has(GrantTask) {
+			return nil, deny(verb + " writes the task cards, which needs the task grant")
+		}
+		reach = func(target string) string {
+			if target == pa.session {
+				return ""
+			}
+			return "session " + echoName(target) + " is not the pane's own session, and its task cards need the admin grant"
+		}
 	case scopeMail, scopeWrite:
 		if verb == "respond" {
 			if !pa.grants.Has(GrantRespond) {
@@ -805,7 +846,7 @@ func (d *Daemon) checkGrants(cs *connState, verb string, params json.RawMessage)
 	if verr != nil || !typingVerbs[verb] {
 		return out, verr
 	}
-	return d.holdTypingTarget(verb, pa, out, deny)
+	return d.holdTypingTarget(cs, verb, pa, out, deny)
 }
 
 // holdLinkTyping holds a typing call over a link to the rule a pane here is
@@ -823,7 +864,7 @@ func (d *Daemon) holdLinkTyping(cs *connState, verb string, params json.RawMessa
 		LogBasic("Link %s (%s) refused %s: %s", cs.clientID, pa.window, verb, why)
 		return grantForbidden(verb, pa, why)
 	}
-	return d.holdTypingTarget(verb, pa, params, deny)
+	return d.holdTypingTarget(cs, verb, pa, params, deny)
 }
 
 // linkTypingAuthority is what a typing caller over a link holds here, or nil
@@ -884,7 +925,7 @@ var typingVerbs = map[string]bool{
 // The call's window is pinned to the id it resolves to now, so a focus change
 // between this check and the handler cannot send the text somewhere else. A
 // target that does not resolve is left for the handler to report.
-func (d *Daemon) holdTypingTarget(verb string, pa *paneAuth, params json.RawMessage, deny func(string) *verbError) (json.RawMessage, *verbError) {
+func (d *Daemon) holdTypingTarget(cs *connState, verb string, pa *paneAuth, params json.RawMessage, deny func(string) *verbError) (json.RawMessage, *verbError) {
 	var m map[string]json.RawMessage
 	if err := json.Unmarshal(params, &m); err != nil || m == nil {
 		return params, nil
@@ -896,11 +937,14 @@ func (d *Daemon) holdTypingTarget(verb string, pa *paneAuth, params json.RawMess
 		}
 		return s
 	}
-	sess := d.findTargetSession(str("session"))
+	window := str("window")
+	if window == "" && (verb == "send-text" || verb == "send-keys") && pa.inPane() {
+		return nil, typingNeedsWindow(verb)
+	}
+	sess := d.findTargetSession(cs, str("session"))
 	if sess == nil {
 		return params, nil
 	}
-	window := str("window")
 	if verb == "ask-agent" && (window == "" || window == AgentInboxHuman) {
 		// ask-agent needs a window, and human is an inbox, not a pane. The
 		// handler answers both without typing.
@@ -934,6 +978,10 @@ func (d *Daemon) holdTypingTarget(verb string, pa *paneAuth, params json.RawMess
 	if why := d.typingRefusal(pa, target, blockedChecked); why != "" {
 		return nil, deny(why)
 	}
+	if verr := typingBlocked(verb, pa, target, sess.Name(), allowBlocked); verr != nil {
+		LogBasic("Pane %s refused %s: window %s is on needs_input", shortWindowID(pa.window), verb, shortWindowID(target.ID))
+		return nil, verr
+	}
 	if pa.grants.Has(GrantAdmin) {
 		// A pane holding admin is only checked, not pinned: with no window,
 		// its send-keys still goes through the attached client.
@@ -941,6 +989,101 @@ func (d *Daemon) holdTypingTarget(verb string, pa *paneAuth, params json.RawMess
 	}
 	raw, _ := json.Marshal(target.ID)
 	m["window"] = raw
+	out, err := json.Marshal(m)
+	if err != nil {
+		return nil, newVerbError(ErrVerbInternal, "could not encode params")
+	}
+	return out, nil
+}
+
+// holdOwnRecord holds a report from a pane that holds admin (set-agent-state
+// and the other scopeSelf verbs) to the pane's own window. A pane without
+// admin is held to it already, by holdToPane.
+//
+// Admin is what every pane holds under the default open mode, and the
+// state a report sets is what typingRefusal reads: a pane that could mark
+// another pane working could then type into the prompt that pane waits on,
+// and answer it, without respond. So a report about another pane needs
+// respond, the grant that answering it needs. The person, outside every pane,
+// is held to nothing here (paneAuthority is nil).
+//
+// The call's session and window are pinned to the caller's own, so the
+// handler resolves nothing else: a window left out means the caller's pane,
+// never the focused one.
+func (d *Daemon) holdOwnRecord(verb string, pa *paneAuth, params json.RawMessage, deny func(string) *verbError) (json.RawMessage, *verbError) {
+	if pa.grants.Has(GrantRespond) || pa.plugin != "" {
+		// A plugin with admin holds what the person gave it in so many
+		// words.
+		return params, nil
+	}
+	if pa.window == unplacedWindow {
+		// A process the daemon started outside every pane, such as git or a
+		// hook. A pane can get code run that way, so it reports for no pane,
+		// as it may not act as the person either (mayActAsHuman).
+		LogBasic("A process outside every pane (%s) refused %s: it reports for no pane", pa.grants.String(), verb)
+		return nil, hintedVerbError(ErrVerbForbidden, verb+" is refused: this process runs outside every pane, so it reports for no pane", &VerbHint{
+			Detail: "Nothing was done. Report from inside the pane, or run the command yourself. A pane with the respond grant can report for another pane.",
+		})
+	}
+	if pa.hosted {
+		// A hosted pane's report about itself is sent on to the machine
+		// that owns its window, which holds it to that window.
+		if d.addressesHostedPane(verb, params) {
+			return params, nil
+		}
+		return nil, deny("it reports for the caller's own pane, and this pane runs here for another machine. Reporting for another pane needs the respond grant")
+	}
+	var m map[string]json.RawMessage
+	if len(strings.TrimSpace(string(params))) > 0 {
+		if err := json.Unmarshal(params, &m); err != nil {
+			return nil, invalidParam("params", "params must be an object")
+		}
+	}
+	if m == nil {
+		m = map[string]json.RawMessage{}
+	}
+	str := func(name string) string {
+		var s string
+		if raw, ok := m[name]; ok {
+			_ = json.Unmarshal(raw, &s)
+		}
+		return s
+	}
+	other := func(what string) *verbError {
+		return deny(what + ", and a pane reports only for its own window " + shortWindowID(pa.window) +
+			". Reporting for another pane needs the respond grant")
+	}
+	session, window := str("session"), str("window")
+	own := d.sessionHoldingWindow(pa.window)
+	if own == nil {
+		// The pane's window is not recorded yet. Only its own id names it.
+		if window != "" && window != pa.window {
+			return nil, other("window " + echoName(window) + " is not this pane")
+		}
+	} else {
+		if session != "" {
+			if sess := d.findTargetSession(nil, session); sess == nil || sess.ID != own.ID {
+				return nil, other("session " + echoName(session) + " is not the pane's own session")
+			}
+		}
+		session = own.Name()
+		if window != "" {
+			// A name or a short id is resolved the way the handler would,
+			// in the pane's own session.
+			wins := own.GetState().Windows
+			if idx, err := findWindowStateIndex(wins, window); err != nil || wins[idx].ID != pa.window {
+				return nil, other("window " + echoName(window) + " is not this pane")
+			}
+		}
+	}
+	set := func(name, value string) {
+		raw, _ := json.Marshal(value)
+		m[name] = raw
+	}
+	if session != "" {
+		set("session", session)
+	}
+	set("window", pa.window)
 	out, err := json.Marshal(m)
 	if err != nil {
 		return nil, newVerbError(ErrVerbInternal, "could not encode params")
@@ -959,18 +1102,30 @@ func (d *Daemon) holdTypingTarget(verb string, pa *paneAuth, params json.RawMess
 // under the default open mode, and admin does not imply respond: without the
 // rule one agent could answer another agent's permission prompt by typing
 // "1" and Enter into it. The person answers it, or gives respond.
+//
+// A native plugin has a typing rule of its own: with write it types into
+// any pane, whatever that pane holds, and the prompt rule still holds it.
+// The person gave it write in so many words ("types into your panes and
+// shells, so it can run commands as you"), and under the default open mode
+// every pane holds admin, so the pane rule would leave write with no pane to
+// type into. A plugin never holds respond. The prompt rule knows only the
+// prompts tuios sees (needs_input): a plain y/N question in a shell is not
+// one, and a plugin with write can answer it.
 func (d *Daemon) typingRefusal(pa *paneAuth, target WindowState, blockedChecked bool) string {
 	if target.ID == pa.window {
 		return ""
 	}
 	held, _ := d.manager.grants.effective(target.ID)
+	if pa.plugin != "" {
+		held = 0
+	}
 	if !pa.grants.Has(GrantAdmin) && !pa.grants.Covers(held) {
 		return "window " + shortWindowID(target.ID) + " holds " + held.String() + ", more than this pane holds, and what is typed there runs with that. " +
 			"A pane types only into panes that hold nothing it does not"
 	}
 	// files reaches a folder, so holding it too is not enough: what is typed
 	// into a pane whose folder is wider would copy from the wider folder.
-	if !pa.grants.Has(GrantAdmin) && held.Has(GrantFiles) {
+	if !pa.grants.Has(GrantAdmin) && pa.plugin == "" && held.Has(GrantFiles) {
 		if tf := d.windowFolder(target.ID); tf != "" {
 			if pf := d.paneFolder(pa); pf == "" || !pathUnder(tf, pf) {
 				return "window " + shortWindowID(target.ID) + " holds files for " + echoName(tf) + ", a folder this pane's files grant does not reach, and what is typed there copies from it. " +
@@ -986,10 +1141,114 @@ func (d *Daemon) typingRefusal(pa *paneAuth, target WindowState, blockedChecked 
 		return "the agent features are off, so tuios cannot see whether window " + shortWindowID(target.ID) +
 			" is waiting on a prompt. Typing into a pane this pane did not open, and that is not at its shell prompt, needs the respond grant"
 	}
+	if target.AgentState != AgentStateNeedsInput && !pa.grants.Has(GrantRespond) {
+		// The state says the pane is not on a prompt, but something other
+		// than the pane moved it off one (promptStillShown). A verb that checks needs_input itself reads
+		// the same state, so blockedChecked does not cover this.
+		if sess := d.sessionHoldingWindow(target.ID); sess != nil && sess.promptStillShown(target) {
+			return "window " + shortWindowID(target.ID) + " was waiting on a prompt, and its state was changed from outside the pane. " +
+				"The prompt can still be on the screen, and what is typed now could answer it, which needs the respond grant"
+		}
+	}
+	if !blockedChecked && target.AgentState == AgentStateNeedsInput && !pa.grants.Has(GrantRespond) && pa.plugin != "" {
+		return "window " + shortWindowID(target.ID) + " is waiting on a prompt, and what is typed now would answer it. A plugin does not answer a prompt that tuios knows of. Only you do that"
+	}
 	if !blockedChecked && target.AgentState == AgentStateNeedsInput && !pa.grants.Has(GrantRespond) {
 		return "window " + shortWindowID(target.ID) + " is waiting on a prompt, and what is typed now would answer it, which needs the respond grant"
 	}
 	return ""
+}
+
+// typingAllowBlockedParam is the allow_blocked parameter of the verbs in
+// paneTypingVerbs.
+var typingAllowBlockedParam = verbParam{
+	Name:        "allow_blocked",
+	Type:        "bool",
+	Description: "From a pane, type into a pane on needs_input instead of refusing with agent_blocked. What is typed then answers its prompt, which also needs the respond grant. The person, outside every pane, is not held.",
+	Default:     "false",
+}
+
+// paneTypingVerbs are the typing verbs that type into a pane on needs_input
+// only with allow_blocked. ask-agent has the rule of its own, and run and the
+// queue type only at a shell prompt or into an agent at rest. Of these,
+// send-text and send-keys also need a window from a pane (typingNeedsWindow).
+// paste-buffer does not: tmux's paste-buffer pastes into the caller's own
+// pane, and scripts use it so.
+var paneTypingVerbs = map[string]bool{
+	"send-text":    true,
+	"send-keys":    true,
+	"paste-buffer": true,
+}
+
+// inPane reports whether pa is a caller inside a pane on this machine: not
+// a link, a native plugin, or a process the daemon started outside every
+// pane.
+func (pa *paneAuth) inPane() bool {
+	return pa != nil && pa.plugin == "" && pa.via != "link" && pa.window != "" && pa.window != unplacedWindow
+}
+
+// typingNeedsWindow refuses a typing verb from a pane that names no window.
+// With no window the text goes to the pane the person has in focus, which an
+// agent cannot see and which moves under it. Its own pane is one an agent
+// can always name, with TUIOS_PANE_ID.
+func typingNeedsWindow(verb string) *verbError {
+	return hintedVerbError(ErrVerbInvalidParams, verb+" from a pane needs a window: without one, the text goes to the pane the person has in focus", &VerbHint{
+		Param:   "window",
+		Verb:    "list-windows",
+		Command: "tuios list-windows",
+		Detail:  "Nothing was typed. Name the pane with -w: its name, its id, or its index from list-windows.",
+	})
+}
+
+// typingBlocked refuses a pane's send-text, send-keys or paste-buffer into
+// another pane on needs_input unless the call passes allow_blocked, the rule
+// ask-agent has. typingRefusal has already asked for respond: this holds a
+// pane that has respond as well, because typing into a prompt by mistake
+// answers it, and the mistake is easy to make. allow_blocked says the caller
+// read the prompt and means to answer it.
+//
+// The person, outside every pane, is held to neither rule.
+func typingBlocked(verb string, pa *paneAuth, target WindowState, session string, allowBlocked bool) *verbError {
+	if allowBlocked || !paneTypingVerbs[verb] || !pa.inPane() || target.ID == pa.window || target.AgentState != AgentStateNeedsInput {
+		return nil
+	}
+	what := "a prompt"
+	switch agentBlockedBy(target) {
+	case harness.PromptKindApproval:
+		what = "an approval"
+	case harness.PromptKindQuestion:
+		what = "a question"
+	case harness.PromptKindAuth:
+		what = "a login"
+	}
+	msg := "window " + shortWindowID(target.ID) + " is waiting on " + what + ", and text typed now would answer it"
+	if note := printableClaim(target.AgentMessage, agentMsgMaxSubject); note != "" {
+		msg += ": " + note
+	}
+	return hintedVerbError(ErrVerbAgentBlocked, msg, &VerbHint{
+		Param:   "allow_blocked",
+		Verb:    "peek-prompt",
+		Command: "tuios peek-prompt -s " + session + " -w " + shortWindowID(target.ID),
+		Detail:  "Nothing was typed. Read the prompt with peek-prompt. Tell the person which pane waits, with tuios ask-human. To answer the prompt yourself, pass --allow-blocked.",
+	})
+}
+
+// recheckBlocked repeats typingBlocked right before a typing verb writes: the
+// target can come to a prompt after checkGrants ran. A window of "" is the
+// focused one, which a pane cannot name (typingNeedsWindow).
+func (d *Daemon) recheckBlocked(cs *connState, verb string, sess *Session, windowID string, allowBlocked bool) *verbError {
+	if cs == nil || allowBlocked || windowID == "" {
+		return nil
+	}
+	pa := cs.paneView.Load()
+	if !pa.inPane() {
+		return nil
+	}
+	target, ok := findWindowState(sess.GetState(), windowID)
+	if !ok {
+		return nil
+	}
+	return typingBlocked(verb, pa, target, sess.Name(), false)
 }
 
 // recheckTyping repeats the target check right before a typing verb writes,
@@ -1135,7 +1394,7 @@ func (d *Daemon) checkGrantMessage(cs *connState, t MessageType) *verbError {
 	if t == MsgHello || t == MsgPing || cs == nil || cs.viaLink || cs.paneOnly {
 		return nil
 	}
-	if cs.paneBound.Load() == nil && !d.manager.grants.mayMatter() && !d.nativePluginsRun() {
+	if cs.paneBound.Load() == nil && cs.pluginBound.Load() == nil && !d.manager.grants.mayMatter() && !d.nativePluginsRun() {
 		return nil
 	}
 	pa := d.paneAuthority(cs)
@@ -1232,13 +1491,23 @@ func (d *Daemon) permissionMode() string {
 // it also places a connection the kernel cannot place.
 func (d *Daemon) verbPaneGrants(cs *connState, params json.RawMessage) (any, *verbError) {
 	var p struct {
-		PaneID    string `json:"pane_id"`
-		PaneToken string `json:"pane_token"`
-		PeerPID   *int   `json:"peer_pid"`
-		PeerStart uint64 `json:"peer_start"`
+		PaneID      string `json:"pane_id"`
+		PaneToken   string `json:"pane_token"`
+		PluginID    string `json:"plugin_id"`
+		PluginToken string `json:"plugin_token"`
+		PeerPID     *int   `json:"peer_pid"`
+		PeerStart   uint64 `json:"peer_start"`
 	}
 	if verr := decodeParams(params, &p); verr != nil {
 		return nil, verr
+	}
+	if p.PluginID != "" || p.PluginToken != "" {
+		if p.PeerPID != nil || p.PaneID != "" || p.PaneToken != "" {
+			return nil, invalidParam("plugin_token", "pass plugin_id and plugin_token alone")
+		}
+		if verr := d.bindPluginToken(cs, p.PluginID, p.PluginToken); verr != nil {
+			return nil, verr
+		}
 	}
 	if p.PeerPID != nil {
 		// Another process asked about: the holder of a tmux shim pane asks
@@ -1382,7 +1651,7 @@ func (d *Daemon) verbSetPaneGrants(cs *connState, params json.RawMessage) (any, 
 	if p.Session == "" && caller != nil && caller.session != "" {
 		p.Session = caller.session
 	}
-	sess, verr := d.resolveVerbSession(p.Session)
+	sess, verr := d.resolveVerbSession(cs, p.Session)
 	if verr != nil {
 		return nil, verr
 	}

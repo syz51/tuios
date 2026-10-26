@@ -34,6 +34,12 @@ type PostRenderWriter struct {
 	// not for WriteHost, because it answers for the frame being written. See
 	// FrameHook.
 	frameHook FrameHook
+	// frameOwed is set while a frame the client composed has not reached
+	// the renderer's Write yet. Data queued while it is clear has no frame
+	// coming to carry it. See FlushIfDrawn.
+	frameOwed bool
+	// written runs after each frame the renderer wrote. See FrameWriter.
+	written func()
 }
 
 // FrameHook runs on each frame the renderer writes. out is the frame to send
@@ -93,6 +99,9 @@ func (w *PostRenderWriter) write(p []byte, frame bool) (n int, err error) {
 	pending := w.pending
 	w.pending = nil
 	out := p
+	if frame {
+		w.frameOwed = false
+	}
 	if frame && w.frameHook != nil {
 		var after []byte
 		if out, after = w.frameHook(p); len(after) > 0 {
@@ -123,6 +132,9 @@ func (w *PostRenderWriter) write(p []byte, frame bool) (n int, err error) {
 	if _, err = w.File.Write(buf); err != nil {
 		return 0, err
 	}
+	if frame && w.written != nil {
+		w.written()
+	}
 	return len(p), nil
 }
 
@@ -134,6 +146,32 @@ func (w *PostRenderWriter) QueuePostRender(data []byte) {
 	w.mu.Lock()
 	w.pending = append(w.pending, data...)
 	w.mu.Unlock()
+}
+
+// FrameComposed records that the client composed a frame that differs from
+// the last one, so the renderer has a frame to write.
+func (w *PostRenderWriter) FrameComposed() {
+	w.mu.Lock()
+	w.frameOwed = true
+	w.mu.Unlock()
+}
+
+// FlushIfDrawn writes the queued data now when no frame is owed: the screen
+// already shows the frame the data was queued for.
+//
+// The renderer writes nothing for a frame equal to the one it wrote last. A
+// picture that is prepared off the update loop, such as a reply's image
+// preview, arrives in such a frame: its cells were drawn blank a frame
+// earlier. The data queued for it then waited for the next frame that
+// changed a cell, so the picture showed only after the next key or click.
+func (w *PostRenderWriter) FlushIfDrawn() {
+	w.mu.Lock()
+	owed := w.frameOwed || len(w.pending) == 0
+	w.mu.Unlock()
+	if owed {
+		return
+	}
+	_, _ = w.write(nil, false)
 }
 
 // ClearPending discards all pending data. Used when screen is cleared
@@ -188,9 +226,10 @@ func appendInsideSync(buf, frame, after []byte) []byte {
 // PostRenderWriter does for a local terminal's frames: the output of the
 // frame hook goes out after each frame, in the same write.
 type FrameHookWriter struct {
-	w    io.Writer
-	mu   sync.Mutex
-	hook FrameHook
+	w       io.Writer
+	mu      sync.Mutex
+	hook    FrameHook
+	written func()
 }
 
 // NewFrameHookWriter wraps the writer a session's renderer writes to.
@@ -207,21 +246,21 @@ func (f *FrameHookWriter) SetHook(fn FrameHook) {
 
 func (f *FrameHookWriter) Write(p []byte) (int, error) {
 	f.mu.Lock()
-	hook := f.hook
+	hook, written := f.hook, f.written
 	f.mu.Unlock()
 	out, after := p, []byte(nil)
 	if hook != nil {
 		out, after = hook(p)
 	}
-	if len(after) == 0 {
-		if _, err := f.w.Write(out); err != nil {
-			return 0, err
-		}
-		return len(p), nil
+	buf := out
+	if len(after) > 0 {
+		buf = appendInsideSync(make([]byte, 0, len(out)+len(after)), out, after)
 	}
-	buf := appendInsideSync(make([]byte, 0, len(out)+len(after)), out, after)
 	if _, err := f.w.Write(buf); err != nil {
 		return 0, err
+	}
+	if written != nil {
+		written()
 	}
 	return len(p), nil
 }
@@ -245,11 +284,33 @@ func (f *FrameHookFile) SetHook(fn FrameHook) { f.hw.SetHook(fn) }
 func (f *FrameHookFile) Write(p []byte) (int, error) { return f.hw.Write(p) }
 
 // FrameWriter is the renderer's writer seen from the graphics side: it runs a
-// hook after each frame, and takes output that is not tied to one.
+// hook after each frame, and takes output that is not tied to one. It also
+// says when the renderer has finished writing a frame (SetFrameWritten),
+// which is when the event loop is free again: see frameWritten.
 type FrameWriter interface {
 	SetFrameHook(fn FrameHook)
+	SetFrameWritten(fn func())
 	WriteOutside(p []byte)
 }
+
+// SetFrameWritten installs the function that runs after each frame is
+// written.
+func (w *PostRenderWriter) SetFrameWritten(fn func()) {
+	w.mu.Lock()
+	w.written = fn
+	w.mu.Unlock()
+}
+
+// SetFrameWritten installs the function that runs after each frame is
+// written.
+func (f *FrameHookWriter) SetFrameWritten(fn func()) {
+	f.mu.Lock()
+	f.written = fn
+	f.mu.Unlock()
+}
+
+// SetFrameWritten is FrameHookWriter.SetFrameWritten.
+func (f *FrameHookFile) SetFrameWritten(fn func()) { f.hw.SetFrameWritten(fn) }
 
 // WriteOutside writes p to the terminal without running the frame hook.
 func (w *PostRenderWriter) WriteOutside(p []byte) { _, _ = w.write(p, false) }
@@ -273,6 +334,7 @@ func (f *FrameHookFile) WriteOutside(p []byte) { f.hw.WriteOutside(p) }
 // The hook also keeps a parked host cursor hidden. See cursor_park.go.
 func (m *OS) ConnectFrameWriter(w FrameWriter) {
 	park := m.connectCursorPark(w)
+	w.SetFrameWritten(m.frameWritten.note)
 	w.SetFrameHook(func(frame []byte) ([]byte, []byte) {
 		after := m.GraphicsFrameBytes(frame)
 		out, seq := park.frame(frame)

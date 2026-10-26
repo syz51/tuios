@@ -76,6 +76,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Gaurav-Gosain/tuios/internal/herdrplugin"
 	"github.com/Gaurav-Gosain/tuios/internal/integration"
 	"github.com/Gaurav-Gosain/tuios/internal/procinfo"
 )
@@ -307,6 +308,9 @@ func (d *Daemon) acceptHerdrLoop(l net.Listener) {
 	for {
 		conn, err := l.Accept()
 		if err != nil {
+			if d.acceptPaused.Load() {
+				return
+			}
 			select {
 			case <-d.ctx.Done():
 				return
@@ -507,7 +511,7 @@ func (d *Daemon) herdrCall(cs *connState, req herdrRequest) (any, string, string
 		if d.herdrYields(window, harness, p.Source) {
 			return map[string]any{"type": "ok"}, "", ""
 		}
-		out, code, msg := d.herdrReport(sess, window, harness, pid, p)
+		out, code, msg := d.herdrReport(sess, window, harness, pid, p, !outside)
 		if code == "" {
 			// A report names its agent itself, so the name alone earns no
 			// trust: the pane must be running that agent's process.
@@ -534,7 +538,7 @@ func (d *Daemon) herdrCall(cs *connState, req herdrRequest) (any, string, string
 		// detection then reads the pane as for any other. A state the
 		// detector holds is not a report's, and stays.
 		if held := d.reportClaimHarness(window); held != nil {
-			if _, code, msg := d.herdrSetState(sess, window, *held, "none", "", "", "", 0); code != "" {
+			if _, code, msg := d.herdrSetState(sess, window, *held, "none", "", "", "", 0, !outside); code != "" {
 				return nil, code, msg
 			}
 		}
@@ -545,7 +549,7 @@ func (d *Daemon) herdrCall(cs *connState, req herdrRequest) (any, string, string
 		// The release carries a seq, recorded above, and the high-water
 		// mark stays. A report Crush queued before it quit can reach the
 		// socket after the release, and it must not bring the pane back.
-		if _, code, msg := d.herdrSetState(sess, window, harness, "none", "", "", "", 0); code != "" {
+		if _, code, msg := d.herdrSetState(sess, window, harness, "none", "", "", "", 0, !outside); code != "" {
 			return nil, code, msg
 		}
 	}
@@ -619,9 +623,44 @@ func (d *Daemon) herdrPane(cs *connState, method, paneID string) (window string,
 	// A scratch terminal, which herdr's lists leave out, reports this way
 	// too.
 	if _, part, ok := strings.Cut(paneID, ":p"); paneID != window && (!ok || part != herdrHex(window)) {
+		if target, ok := d.pluginPaneMetadataTarget(cs, method, window, paneID); ok {
+			return target, true, "", ""
+		}
 		return "", false, "forbidden", "a pane may report only for itself"
 	}
 	return window, false, "", ""
+}
+
+// pluginPaneMetadataTarget is the window a herdr plugin's own pane may tag
+// with metadata when it names another pane. herdr lets any client stamp
+// metadata on any pane, and plugins rely on it: herdr-sidebar marks each
+// preview pane it opens, and closes the pane again when the mark is refused.
+// A herdr plugin's event hooks and actions run outside every pane and may already
+// do this under mode open (the outside branch of herdrPane), so the plugin's
+// pane gets nothing its plugin lacks. Under strict the outside branch refuses
+// a plugin's command, and this refuses its pane the same way. Only metadata
+// is let through: agent state stays with the pane that reports it.
+func (d *Daemon) pluginPaneMetadataTarget(cs *connState, method, own, paneID string) (string, bool) {
+	if method != "pane.report_metadata" || d.plugins == nil || cs == nil || cs.viaLink || cs.paneOnly || d.manager.grants.strict() {
+		return "", false
+	}
+	d.plugins.mu.Lock()
+	rec, isPluginPane := d.plugins.panes[own]
+	d.plugins.mu.Unlock()
+	if !isPluginPane {
+		return "", false
+	}
+	// A native plugin's commands are held to its grants, which never let
+	// them report for a pane (checkPluginGrants), and a plugin turned off
+	// since it opened the pane has no rights left to lend it.
+	if e, herr := d.herdrPluginEntry(rec.pluginID); herr != nil || e.Plugin.Format == herdrplugin.FormatTuios {
+		return "", false
+	}
+	_, win, ierr := d.herdrFindPane(paneID)
+	if ierr != nil {
+		return "", false
+	}
+	return win.ID, true
 }
 
 // herdrReportVerb is the tuios verb a herdr pane report stands for, whose
@@ -750,7 +789,7 @@ func (d *Daemon) herdrAnchorsFor(cs *connState, window string) []herdrAnchor {
 		}
 	}
 	cur := cs.peerPID
-	for depth := 0; depth < paneOriginMaxDepth; depth++ {
+	for range paneOriginMaxDepth {
 		ppid, _, ok := readProcLineage(cur)
 		if !ok || ppid <= 1 || ppid == paneShell || ppid == os.Getpid() {
 			break
@@ -869,7 +908,7 @@ func (d *Daemon) herdrNotify(window string, p herdrParams) (any, string, string)
 // herdrReport applies one pane.report_agent. pid is the reporting process,
 // sent as the harness pid, so a Crush that moves to another conversation
 // while it works is the same harness in the pane and not a nested one.
-func (d *Daemon) herdrReport(sess, window, harness string, pid int, p herdrParams) (any, string, string) {
+func (d *Daemon) herdrReport(sess, window, harness string, pid int, p herdrParams, own bool) (any, string, string) {
 	msg := ""
 	if p.Message != nil {
 		msg = strings.TrimSpace(*p.Message)
@@ -880,7 +919,7 @@ func (d *Daemon) herdrReport(sess, window, harness string, pid int, p herdrParam
 	}
 	switch p.State {
 	case "working":
-		_, code, text := d.herdrSetState(sess, window, harness, "working", msg, sid, "", pid)
+		_, code, text := d.herdrSetState(sess, window, harness, "working", msg, sid, "", pid, own)
 		if code != "" {
 			return nil, code, text
 		}
@@ -892,7 +931,7 @@ func (d *Daemon) herdrReport(sess, window, harness string, pid int, p herdrParam
 				msg = herdrBlockedPlaceholder
 			}
 		}
-		_, code, text := d.herdrSetStateKind(sess, window, harness, "needs_input", kind, msg, sid, "", pid)
+		_, code, text := d.herdrSetStateKind(sess, window, harness, "needs_input", kind, msg, sid, "", pid, own)
 		if code != "" {
 			return nil, code, text
 		}
@@ -900,12 +939,12 @@ func (d *Daemon) herdrReport(sess, window, harness string, pid int, p herdrParam
 		// Rest after a turn is a finished turn; rest from anywhere else,
 		// Crush's first report included, is idle. The message a reporter
 		// sends with idle is empty or stale, and is not kept.
-		reason, code, text := d.herdrSetState(sess, window, harness, "done", "", sid, "working,needs_input", pid)
+		reason, code, text := d.herdrSetState(sess, window, harness, "done", "", sid, "working,needs_input", pid, own)
 		if code != "" {
 			return nil, code, text
 		}
 		if reason == agentRefusedIfState {
-			if _, code, text := d.herdrSetState(sess, window, harness, "idle", "", sid, "", pid); code != "" {
+			if _, code, text := d.herdrSetState(sess, window, harness, "idle", "", sid, "", pid, own); code != "" {
 				return nil, code, text
 			}
 		}
@@ -950,12 +989,13 @@ func herdrBlockedKind(harness, msg string) string {
 
 // herdrSetState reports one state for the pane through set-agent-state,
 // returning the refusal reason, if any, or an error code and message.
-func (d *Daemon) herdrSetState(sess, window, harness, state, msg, sid, ifState string, pid int) (string, string, string) {
-	return d.herdrSetStateKind(sess, window, harness, state, "", msg, sid, ifState, pid)
+func (d *Daemon) herdrSetState(sess, window, harness, state, msg, sid, ifState string, pid int, own bool) (string, string, string) {
+	return d.herdrSetStateKind(sess, window, harness, state, "", msg, sid, ifState, pid, own)
 }
 
 // herdrSetStateKind is herdrSetState with the kind of a needs_input block.
-func (d *Daemon) herdrSetStateKind(sess, window, harness, state, kind, msg, sid, ifState string, pid int) (string, string, string) {
+// own says the report comes from the pane it is about (herdrPane).
+func (d *Daemon) herdrSetStateKind(sess, window, harness, state, kind, msg, sid, ifState string, pid int, own bool) (string, string, string) {
 	params := map[string]any{"session": sess, "window": window, "state": state}
 	if kind != "" {
 		params["kind"] = kind
@@ -976,7 +1016,7 @@ func (d *Daemon) herdrSetStateKind(sess, window, harness, state, kind, msg, sid,
 		params["if_state"] = ifState
 	}
 	raw, _ := json.Marshal(params)
-	out, verr := d.verbSetAgentState(nil, raw)
+	out, verr := d.setAgentState(nil, raw, own)
 	if verr != nil {
 		return "", "report_failed", verr.Message
 	}
